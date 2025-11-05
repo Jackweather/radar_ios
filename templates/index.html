@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ADKRADAR</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    #header {
+      background-color: #333;
+      color: white;
+      text-align: center;
+      padding: 15px;
+      font-size: 28px;
+      font-weight: bold;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+      position: relative;
+    }
+    #status {
+      font-size: 14px;
+      position: absolute;
+      bottom: 5px;
+      right: 10px;
+      color: #ccc;
+    }
+    #container {
+      display: flex;
+      flex-direction: column;
+      height: calc(100% - 65px); /* Adjust for header height */
+    }
+    #mainContent {
+      display: flex;
+      flex: 1;
+    }
+    #leftPanel, #rightPanel {
+      width: 200px;
+      background: rgba(255,255,255,0.9);
+      padding: 10px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.3);
+      overflow-y: auto;
+    }
+    #leftPanel {
+      border-right: 1px solid #ccc;
+    }
+    #rightPanel {
+      border-left: 1px solid #ccc;
+    }
+    #map {
+      flex: 1;
+    }
+    #bottomPanel {
+      background: rgba(255,255,255,0.9);
+      padding: 10px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+    .toggleGroup {
+      margin-bottom: 10px;
+    }
+    .toggleGroup label {
+      display: block;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #opacityLabel {
+      font-weight: bold;
+    }
+    #opacitySlider {
+      width: 80%;
+    }
+    #runButton {
+      margin-top: 10px;
+      padding: 10px 20px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    #runButton:hover {
+      background-color: #45a049;
+    }
+    .recentImages {
+      margin-top: 20px;
+    }
+    .recentImages img {
+      width: 100%;
+      margin-bottom: 10px;
+      border: 1px solid #ccc;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <a href="{{ url_for('gallery') }}" style="color:#fff;text-decoration:none;position:absolute;left:16px;top:15px;font-size:16px;">Gallery</a>
+    ADKRADAR
+    <div id="status">Loading...</div>
+  </div>
+  <div id="container">
+    <div id="mainContent">
+      <div id="leftPanel">
+        <div><strong>Additional Information</strong></div>
+        <p>Use the controls on the right to toggle radar overlays.</p>
+        <p>Click on the circles on the map to toggle overlays and zoom to their bounds.</p>
+        <div class="recentImages">
+          <strong>Recently Generated Images</strong>
+          <div id="recentImagesContainer">Loading...</div>
+        </div>
+      </div>
+      <div id="map"></div>
+      <div id="rightPanel">
+        <div><strong>Toggle Radar Overlays</strong></div>
+        <div class="toggleGroup">
+          {% for s in stations %}
+            <label>
+              <input type="checkbox" id="toggle_{{ s.id }}">
+              {{ s.id }}
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <div id="bottomPanel">
+      <label id="opacityLabel" for="opacitySlider">Overlay Opacity: <span id="opacityValue">0.6</span></label>
+      <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="0.6" />
+      <button id="runButton">Run Radar Generation</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([39.95, -78.5], 7);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const overlays = {};
+
+    {% for s in stations %}
+      // Circles on map for each station
+      const circle_{{ s.id }} = L.circle([{{ s.lat }}, {{ s.lon }}], {
+        radius: 10000,
+        color: 'blue',
+        fillColor: '#3399ff',
+        fillOpacity: 0.3
+      }).addTo(map);
+
+      const originalBounds_{{ s.id }} = {{ s.bounds | safe }};
+
+      const shiftedBounds_{{ s.id }} = [
+        [originalBounds_{{ s.id }}[0][0] - 0.1, originalBounds_{{ s.id }}[0][1]],
+        [originalBounds_{{ s.id }}[1][0] - 0.1, originalBounds_{{ s.id }}[1][1]]
+      ];
+
+      {% if s.image_url %}
+      // Create image overlay for {{ s.id }} only when image_url is present
+      const overlay_{{ s.id }} = L.imageOverlay("{{ s.image_url }}", shiftedBounds_{{ s.id }}, {opacity: 0.6});
+      overlays["{{ s.id }}"] = overlay_{{ s.id }};
+
+      // Circle click toggles overlay AND checkbox state
+      circle_{{ s.id }}.on('click', () => {
+        const checkbox = document.getElementById("toggle_{{ s.id }}");
+        if (map.hasLayer(overlay_{{ s.id }})) {
+          map.removeLayer(overlay_{{ s.id }});
+          checkbox.checked = false;
+        } else {
+          overlay_{{ s.id }}.addTo(map);
+          checkbox.checked = true;
+          map.fitBounds(shiftedBounds_{{ s.id }});
+        }
+      });
+
+      // Checkbox toggle event to add/remove overlays
+      document.addEventListener('DOMContentLoaded', () => {
+        const checkbox = document.getElementById("toggle_{{ s.id }}");
+        checkbox.addEventListener('change', (e) => {
+          if (e.target.checked) {
+            overlays["{{ s.id }}"].addTo(map);
+          } else {
+            map.removeLayer(overlays["{{ s.id }}"]);
+          }
+        });
+      });
+      {% else %}
+      // No image for {{ s.id }} yet; checkbox will only toggle nothing until image appears
+      circle_{{ s.id }}.on('click', () => {
+        alert("No radar image available yet for {{ s.id }}.");
+      });
+      {% endif %}
+    {% endfor %}
+
+    // Opacity slider to control all overlays opacity
+    document.addEventListener('DOMContentLoaded', () => {
+      const slider = document.getElementById("opacitySlider");
+      const opacityValue = document.getElementById("opacityValue");
+
+      slider.addEventListener('input', (e) => {
+        const opacity = parseFloat(e.target.value);
+        opacityValue.textContent = opacity.toFixed(2);
+
+        // Update opacity for all overlays
+        Object.values(overlays).forEach(overlay => {
+          overlay.setOpacity(opacity);
+        });
+      });
+    });
+
+    // Update status periodically
+    function updateStatus() {
+      fetch('/status')
+        .then(response => response.json())
+        .then(data => {
+          const statusElement = document.getElementById('status');
+          statusElement.textContent = `${data.status} (Last updated: ${data.last_updated})`;
+        })
+        .catch(() => {
+          const statusElement = document.getElementById('status');
+          statusElement.textContent = 'Error fetching status';
+        });
+    }
+    setInterval(updateStatus, 5000); // Update every 5 seconds
+
+    // Fetch and display recently generated images
+    function updateRecentImages() {
+      fetch('/recent-images')
+        .then(response => response.json())
+        .then(data => {
+          const container = document.getElementById('recentImagesContainer');
+          container.innerHTML = '';
+          data.forEach(image => {
+            const imgElement = document.createElement('img');
+            imgElement.src = image.image;
+            imgElement.alt = `Radar image for ${image.station}`;
+            container.appendChild(imgElement);
+          });
+        })
+        .catch(() => {
+          const container = document.getElementById('recentImagesContainer');
+          container.textContent = 'Error fetching recent images';
+        });
+    }
+    setInterval(updateRecentImages, 5000); // Update every 5 seconds
+
+    // Trigger radar generation manually
+    document.getElementById('runButton').addEventListener('click', () => {
+      fetch('/run-generation', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          alert(data.message || 'Radar generation started.');
+        })
+        .catch(() => {
+          alert('Error starting radar generation.');
+        });
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      updateStatus();
+      updateRecentImages();
+    });
+  </script>
+</body>
+</html>

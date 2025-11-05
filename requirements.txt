@@ -1,0 +1,23 @@
+matplotlib
+numpy
+arm_pyart
+fsspec
+metpy
+Flask
+gunicorn
+cartopy
+cftime
+mda-xdrlib
+netCDF4
+open_radar_data
+pandas
+pint
+pooch
+s3fs
+scipy
+xarray
+xradar
+boto3
+requests
+# optional: pin botocore separately if needed
+# botocore
