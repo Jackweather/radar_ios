@@ -128,85 +128,99 @@ def generate_radar_images():
 				first_run = False
 
 			for site in stations:
-				# use boto3 search for most recent Level-II file for station
-				key, bucket = find_latest_level2_key(site, days_back=3)
-				if not key:
-					print(f"No files found for station {site}. Skipping...")
+				try:
+					# use boto3 search for most recent Level-II file for station
+					key, bucket = find_latest_level2_key(site, days_back=3)
+					if not key:
+						print(f"No files found for station {site}. Skipping...")
+						continue
+
+					print(f"Processing station {site}: s3://{bucket}/{key}")
+
+					# Download S3 object to local file before passing to pyart
+					local_file = download_s3_object(bucket, key, dest_dir=output_dir)
+					# If gzipped, decompress before reading
+					try:
+						local_file = ensure_uncompressed(local_file)
+					except Exception as e:
+						print(f"Warning decompressing {local_file}: {e}")
+					# Read from the local file
+					radar = pyart.io.read_nexrad_archive(local_file)
+
+					reflectivity_data = radar.fields['reflectivity']['data']
+					reflectivity_data = np.ma.masked_less(reflectivity_data, 5)
+					radar.fields['reflectivity']['data'] = reflectivity_data
+
+					ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
+
+					fig = plt.figure(figsize=(16, 16))
+					ax = fig.add_subplot(1, 1, 1)
+
+					display = pyart.graph.RadarMapDisplay(radar)
+
+					display.plot_ppi(
+						'reflectivity',
+						0,
+						ax=ax,
+						cmap=ref_cmap,
+						norm=ref_norm,
+						vmin=15,
+						vmax=75,
+						colorbar_flag=False,
+						title=''
+					)
+
+					ax.set_axis_off()
+					fig.patch.set_alpha(0)
+					ax.patch.set_alpha(0)
+
+					# Create a compact per-station filename (4-letter ID only)
+					output_file = f"{output_dir}/{site}.png"
+					plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
+					plt.close()
+
+					print(f"Saved radar image to: {output_file}")
+
+					# Add the generated image to the recent images list (use leading slash for web path)
+					recent_images.append({
+						"station": site,
+						"image": '/' + output_file.replace('\\', '/'),
+						"timestamp": timeStr
+					})
+
+					gate_lats = radar.gate_latitude['data']
+					gate_lons = radar.gate_longitude['data']
+
+					flat_lats = gate_lats.flatten()
+					flat_lons = gate_lons.flatten()
+
+					bounds = {
+						"min_lat": float(np.min(flat_lats)),
+						"max_lat": float(np.max(flat_lats)),
+						"min_lon": float(np.min(flat_lons)),
+						"max_lon": float(np.max(flat_lons))
+					}
+
+					print(f"Geographic bounds of radar sweep for {site}: {bounds}")
+
+					bounds_file = f"{output_dir}/{site}_bounds.json"
+					with open(bounds_file, 'w') as f:
+						json.dump(bounds, f)
+
+					print(f"Saved geographic bounds to: {bounds_file}")
+
+				except Exception as station_err:
+					# Log error for this station and continue with the next one
+					print(f"Error processing station {site}: {station_err}")
+					# optional: record a brief error entry in recent_images for visibility
+					recent_images.append({
+						"station": site,
+						"image": "",
+						"error": str(station_err),
+						"timestamp": timeStr
+					})
 					continue
 
-				print(f"Processing station {site}: s3://{bucket}/{key}")
-
-				# Download S3 object to local file before passing to pyart
-				local_file = download_s3_object(bucket, key, dest_dir=output_dir)
-				# If gzipped, decompress before reading
-				try:
-					local_file = ensure_uncompressed(local_file)
-				except Exception as e:
-					print(f"Warning decompressing {local_file}: {e}")
-				# Read from the local file
-				radar = pyart.io.read_nexrad_archive(local_file)
-
-				reflectivity_data = radar.fields['reflectivity']['data']
-				reflectivity_data = np.ma.masked_less(reflectivity_data, 5)
-				radar.fields['reflectivity']['data'] = reflectivity_data
-
-				ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
-
-				fig = plt.figure(figsize=(16, 16))
-				ax = fig.add_subplot(1, 1, 1)
-
-				display = pyart.graph.RadarMapDisplay(radar)
-
-				display.plot_ppi(
-					'reflectivity',
-					0,
-					ax=ax,
-					cmap=ref_cmap,
-					norm=ref_norm,
-					vmin=15,
-					vmax=75,
-					colorbar_flag=False,
-					title=''
-				)
-
-				ax.set_axis_off()
-				fig.patch.set_alpha(0)
-				ax.patch.set_alpha(0)
-
-				# Create a compact per-station filename (4-letter ID only)
-				output_file = f"{output_dir}/{site}.png"
-				plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
-				plt.close()
-
-				print(f"Saved radar image to: {output_file}")
-
-				# Add the generated image to the recent images list (use leading slash for web path)
-				recent_images.append({
-					"station": site,
-					"image": '/' + output_file.replace('\\', '/'),
-					"timestamp": timeStr
-				})
-
-				gate_lats = radar.gate_latitude['data']
-				gate_lons = radar.gate_longitude['data']
-
-				flat_lats = gate_lats.flatten()
-				flat_lons = gate_lons.flatten()
-
-				bounds = {
-					"min_lat": float(np.min(flat_lats)),
-					"max_lat": float(np.max(flat_lats)),
-					"min_lon": float(np.min(flat_lons)),
-					"max_lon": float(np.max(flat_lons))
-				}
-
-				print(f"Geographic bounds of radar sweep for {site}: {bounds}")
-
-				bounds_file = f"{output_dir}/{site}_bounds.json"
-				with open(bounds_file, 'w') as f:
-					json.dump(bounds, f)
-
-				print(f"Saved geographic bounds to: {bounds_file}")
 			generation_status["status"] = "Idle"
 		except Exception as e:
 			generation_status["status"] = f"Error: {e}"
@@ -382,81 +396,93 @@ def generate_radar_images_once():
 		os.makedirs(output_dir, exist_ok=True)
 
 		for site in stations:
-			# use boto3 search for most recent Level-II file for station
-			key, bucket = find_latest_level2_key(site, days_back=3)
-			if not key:
-				print(f"No files found for station {site}. Skipping...")
+			try:
+				# use boto3 search for most recent Level-II file for station
+				key, bucket = find_latest_level2_key(site, days_back=3)
+				if not key:
+					print(f"No files found for station {site}. Skipping...")
+					continue
+
+				print(f"Processing station {site}: s3://{bucket}/{key}")
+
+				# Download to local and pass local path to pyart
+				local_file = download_s3_object(bucket, key, dest_dir=output_dir)
+				try:
+					local_file = ensure_uncompressed(local_file)
+				except Exception as e:
+					print(f"Warning decompressing {local_file}: {e}")
+				radar = pyart.io.read_nexrad_archive(local_file)
+
+				reflectivity_data = radar.fields['reflectivity']['data']
+				reflectivity_data = np.ma.masked_less(reflectivity_data, 5)
+				radar.fields['reflectivity']['data'] = reflectivity_data
+
+				ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
+
+				fig = plt.figure(figsize=(16, 16))
+				ax = fig.add_subplot(1, 1, 1)
+
+				display = pyart.graph.RadarMapDisplay(radar)
+
+				display.plot_ppi(
+					'reflectivity',
+					0,
+					ax=ax,
+					cmap=ref_cmap,
+					norm=ref_norm,
+					vmin=15,
+					vmax=75,
+					colorbar_flag=False,
+					title=''
+				)
+
+				ax.set_axis_off()
+				fig.patch.set_alpha(0)
+				ax.patch.set_alpha(0)
+
+				output_file = f"{output_dir}/{site}.png"
+				plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
+				plt.close()
+
+				print(f"Saved radar image to: {output_file}")
+
+				recent_images.append({
+					"station": site,
+					"image": '/' + output_file.replace('\\', '/'),
+					"timestamp": timeStr
+				})
+
+				gate_lats = radar.gate_latitude['data']
+				gate_lons = radar.gate_longitude['data']
+
+				flat_lats = gate_lats.flatten()
+				flat_lons = gate_lons.flatten()
+
+				bounds = {
+					"min_lat": float(np.min(flat_lats)),
+					"max_lat": float(np.max(flat_lats)),
+					"min_lon": float(np.min(flat_lons)),
+					"max_lon": float(np.max(flat_lons))
+				}
+
+				print(f"Geographic bounds of radar sweep for {site}: {bounds}")
+
+				bounds_file = f"{output_dir}/{site}_bounds.json"
+				with open(bounds_file, 'w') as f:
+					json.dump(bounds, f)
+
+				print(f"Saved geographic bounds to: {bounds_file}")
+
+			except Exception as station_err:
+				print(f"Error processing station {site} in one-shot run: {station_err}")
+				recent_images.append({
+					"station": site,
+					"image": "",
+					"error": str(station_err),
+					"timestamp": timeStr
+				})
 				continue
 
-			print(f"Processing station {site}: s3://{bucket}/{key}")
-
-			# Download to local and pass local path to pyart
-			local_file = download_s3_object(bucket, key, dest_dir=output_dir)
-			try:
-				local_file = ensure_uncompressed(local_file)
-			except Exception as e:
-				print(f"Warning decompressing {local_file}: {e}")
-			radar = pyart.io.read_nexrad_archive(local_file)
-
-			reflectivity_data = radar.fields['reflectivity']['data']
-			reflectivity_data = np.ma.masked_less(reflectivity_data, 5)
-			radar.fields['reflectivity']['data'] = reflectivity_data
-
-			ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
-
-			fig = plt.figure(figsize=(16, 16))
-			ax = fig.add_subplot(1, 1, 1)
-
-			display = pyart.graph.RadarMapDisplay(radar)
-
-			display.plot_ppi(
-				'reflectivity',
-				0,
-				ax=ax,
-				cmap=ref_cmap,
-				norm=ref_norm,
-				vmin=15,
-				vmax=75,
-				colorbar_flag=False,
-				title=''
-			)
-
-			ax.set_axis_off()
-			fig.patch.set_alpha(0)
-			ax.patch.set_alpha(0)
-
-			output_file = f"{output_dir}/{site}.png"
-			plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
-			plt.close()
-
-			print(f"Saved radar image to: {output_file}")
-
-			recent_images.append({
-				"station": site,
-				"image": '/' + output_file.replace('\\', '/'),
-				"timestamp": timeStr
-			})
-
-			gate_lats = radar.gate_latitude['data']
-			gate_lons = radar.gate_longitude['data']
-
-			flat_lats = gate_lats.flatten()
-			flat_lons = gate_lons.flatten()
-
-			bounds = {
-				"min_lat": float(np.min(flat_lats)),
-				"max_lat": float(np.max(flat_lats)),
-				"min_lon": float(np.min(flat_lons)),
-				"max_lon": float(np.max(flat_lons))
-			}
-
-			print(f"Geographic bounds of radar sweep for {site}: {bounds}")
-
-			bounds_file = f"{output_dir}/{site}_bounds.json"
-			with open(bounds_file, 'w') as f:
-				json.dump(bounds, f)
-
-			print(f"Saved geographic bounds to: {bounds_file}")
 		generation_status["status"] = "Idle"
 		generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 	except Exception as e:
@@ -486,7 +512,11 @@ def start_radar_thread_if_needed():
 # Replace before_first_request with before_request (works in all Flask/Werkzeug versions)
 @app.before_request
 def _start_thread():
-	# lightweight: start thread on first incoming request; subsequent requests skip quickly
+	# lightweight: avoid starting generator for static files, favicon, and simple health/status requests
+	path = (request.path or "").lower()
+	if path.startswith('/static') or path == '/favicon.ico' or path in ('/status', '/recent-images', '/run-generation'):
+		# skip starting on static or health-like endpoints
+		return
 	start_radar_thread_if_needed()
 
 
