@@ -81,16 +81,30 @@ def download_s3_object(bucket, key, dest_dir=None):
 
 
 def ensure_uncompressed(path):
-	"""Detect gzip magic and, if gzipped, decompress to a new temp file and return its path."""
-	with open(path, "rb") as f:
-		magic = f.read(2)
+	"""Detect gzip magic and, if gzipped, attempt to decompress to a new temp file and return its path.
+	If decompression fails we raise a RuntimeError with the original message so callers can skip that station.
+	"""
+	try:
+		with open(path, "rb") as f:
+			magic = f.read(2)
+	except Exception as e:
+		print(f"Warning opening file {path}: {e}")
+		return path
+
 	if magic == b'\x1f\x8b':
 		fd, out_path = tempfile.mkstemp(suffix=".raw")
 		os.close(fd)
-		with gzip.open(path, "rb") as gz, open(out_path, "wb") as out:
-			shutil.copyfileobj(gz, out)
-		print(f"Decompressed gzip {path} -> {out_path}")
-		return out_path
+		try:
+			with gzip.open(path, "rb") as gz, open(out_path, "wb") as out:
+				shutil.copyfileobj(gz, out)
+			print(f"Decompressed gzip {path} -> {out_path}")
+			return out_path
+		except Exception as e:
+			# Surface a clear, catchable error message for callers
+			msg = str(e)
+			print(f"Warning decompressing {path}: {msg}")
+			# Keep original phrasing when possible so checks like "unknown compression record" match
+			raise RuntimeError(msg)
 	return path
 
 
@@ -143,7 +157,17 @@ def generate_radar_images():
 					try:
 						local_file = ensure_uncompressed(local_file)
 					except Exception as e:
-						print(f"Warning decompressing {local_file}: {e}")
+						# ensure_uncompressed now raises RuntimeError on decompression problems
+						errmsg = str(e).lower()
+						print(f"Skipping station {site} due to decompression error: {e}")
+						recent_images.append({
+							"station": site,
+							"image": "",
+							"error": f"decompression error: {e}",
+							"timestamp": timeStr
+						})
+						continue
+
 					# Read from the local file
 					radar = pyart.io.read_nexrad_archive(local_file)
 
@@ -211,8 +235,11 @@ def generate_radar_images():
 
 				except Exception as station_err:
 					# Log error for this station and continue with the next one
-					print(f"Error processing station {site}: {station_err}")
-					# optional: record a brief error entry in recent_images for visibility
+					errstr = str(station_err).lower()
+					if "unknown compression record" in errstr or "decompression error" in errstr:
+						print(f"Skipped station {site} due to compression/decompression issue: {station_err}")
+					else:
+						print(f"Error processing station {site}: {station_err}")
 					recent_images.append({
 						"station": site,
 						"image": "",
@@ -221,10 +248,17 @@ def generate_radar_images():
 					})
 					continue
 
+			# mark idle when finished
 			generation_status["status"] = "Idle"
 		except Exception as e:
-			generation_status["status"] = f"Error: {e}"
-			print(f"Error in radar image generation: {e}")
+			# Treat known decompression/compression messages as non-fatal and continue loop
+			msg = str(e).lower()
+			if "unknown compression record" in msg or "decompression error" in msg:
+				print(f"Non-fatal decompression error during generation cycle: {e} -- continuing to next cycle")
+				generation_status["status"] = "Idle"
+			else:
+				generation_status["status"] = f"Error: {e}"
+				print(f"Error in radar image generation: {e}")
 		finally:
 			# Ensure the function waits for 5 minutes before restarting
 			time.sleep(5 * 60)
@@ -410,7 +444,16 @@ def generate_radar_images_once():
 				try:
 					local_file = ensure_uncompressed(local_file)
 				except Exception as e:
-					print(f"Warning decompressing {local_file}: {e}")
+					errmsg = str(e).lower()
+					print(f"Skipping station {site} in one-shot run due to decompression error: {e}")
+					recent_images.append({
+						"station": site,
+						"image": "",
+						"error": f"decompression error: {e}",
+						"timestamp": timeStr
+					})
+					continue
+
 				radar = pyart.io.read_nexrad_archive(local_file)
 
 				reflectivity_data = radar.fields['reflectivity']['data']
@@ -474,7 +517,11 @@ def generate_radar_images_once():
 				print(f"Saved geographic bounds to: {bounds_file}")
 
 			except Exception as station_err:
-				print(f"Error processing station {site} in one-shot run: {station_err}")
+				errstr = str(station_err).lower()
+				if "unknown compression record" in errstr or "decompression error" in errstr:
+					print(f"Skipped station {site} in one-shot run due to compression/decompression issue: {station_err}")
+				else:
+					print(f"Error processing station {site} in one-shot run: {station_err}")
 				recent_images.append({
 					"station": site,
 					"image": "",
@@ -486,9 +533,15 @@ def generate_radar_images_once():
 		generation_status["status"] = "Idle"
 		generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 	except Exception as e:
-		generation_status["status"] = f"Error: {e}"
-		generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-		print(f"Error in radar image generation: {e}")
+		msg = str(e).lower()
+		if "unknown compression record" in msg or "decompression error" in msg:
+			print(f"Non-fatal decompression error during one-shot generation: {e} -- finishing one-shot run")
+			generation_status["status"] = "Idle"
+			generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+		else:
+			generation_status["status"] = f"Error: {e}"
+			generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+			print(f"Error in radar image generation: {e}")
 
 
 # Add: helper to start the generator thread exactly once (per worker) and allow disabling via env var
