@@ -462,13 +462,36 @@ def generate_radar_images_once():
 		print(f"Error in radar image generation: {e}")
 
 
-if __name__ == '__main__':
-    # Start radar generation in a daemon thread (runs in background)
-    thread = threading.Thread(target=generate_radar_images, daemon=True)
-    thread.start()
+# Add: helper to start the generator thread exactly once (per worker) and allow disabling via env var
+def start_radar_thread_if_needed():
+	# Honor environment variable to disable auto-start if desired (set to "0" or "false" to disable)
+	start_opt = os.environ.get("START_RADAR_GENERATOR", "1").lower()
+	if start_opt not in ("1", "true", "yes", "on"):
+		print("Radar generator thread disabled via START_RADAR_GENERATOR environment variable.")
+		return
+	if not app.config.get("RADAR_THREAD_STARTED"):
+		thread = threading.Thread(target=generate_radar_images, daemon=True)
+		thread.start()
+		app.config["RADAR_THREAD_STARTED"] = True
+		print("Radar generator thread started.")
+	else:
+		print("Radar generator thread already started in this worker.")
 
-    # Run Flask app
-    # Use gunicorn if deployed on Render or similar platforms
-    import os
-    port = int(os.environ.get("PORT", 5000))  # Render sets the PORT environment variable
-    app.run(host="0.0.0.0", port=port, debug=True)
+# Start the background thread on the first incoming request (works with gunicorn/render)
+@app.before_first_request
+def _start_thread():
+	start_radar_thread_if_needed()
+
+
+if __name__ == '__main__':
+	# For local development only: start the generator thread and run Flask
+	# (The thread starter is idempotent, so this won't double-start in the same process.)
+	start_radar_thread_if_needed()
+
+	# Run Flask app
+	# Use gunicorn if deployed on Render or similar platforms
+	import os
+	port = int(os.environ.get("PORT", 5000))  # Render sets the PORT environment variable
+	# Turn off debug reloader by default so we don't spawn extra processes that interfere with threads.
+	debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true", "yes", "on")
+	app.run(host="0.0.0.0", port=port, debug=debug_mode)
