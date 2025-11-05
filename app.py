@@ -21,6 +21,7 @@ from botocore.config import Config
 import gzip
 import shutil
 import tempfile
+import gc  # <--- add garbage-collection import
 
 warnings.filterwarnings("ignore")
 
@@ -152,10 +153,10 @@ def generate_radar_images():
 					print(f"Processing station {site}: s3://{bucket}/{key}")
 
 					# Download S3 object to local file before passing to pyart
-					local_file = download_s3_object(bucket, key, dest_dir=output_dir)
+					downloaded_file = download_s3_object(bucket, key, dest_dir=output_dir)  # renamed var
 					# If gzipped, decompress before reading
 					try:
-						local_file = ensure_uncompressed(local_file)
+						local_file = ensure_uncompressed(downloaded_file)
 					except Exception as e:
 						# ensure_uncompressed now raises RuntimeError on decompression problems
 						errmsg = str(e).lower()
@@ -177,7 +178,8 @@ def generate_radar_images():
 
 					ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
 
-					fig = plt.figure(figsize=(16, 16))
+					# Use smaller figure and lower DPI to reduce memory usage
+					fig = plt.figure(figsize=(8, 8))
 					ax = fig.add_subplot(1, 1, 1)
 
 					display = pyart.graph.RadarMapDisplay(radar)
@@ -198,10 +200,12 @@ def generate_radar_images():
 					fig.patch.set_alpha(0)
 					ax.patch.set_alpha(0)
 
-					# Create a compact per-station filename (4-letter ID only)
 					output_file = f"{output_dir}/{site}.png"
-					plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
-					plt.close()
+					# save using the fig reference, lower dpi
+					fig.savefig(output_file, dpi=150, bbox_inches='tight', pad_inches=0, transparent=True)
+					plt.close(fig)  # explicitly close the specific figure
+					del fig, ax
+					gc.collect()
 
 					print(f"Saved radar image to: {output_file}")
 
@@ -233,6 +237,31 @@ def generate_radar_images():
 
 					print(f"Saved geographic bounds to: {bounds_file}")
 
+					# Clean up large objects and temporary files to free memory/disk
+					try:
+						del radar
+						del reflectivity_data
+						del gate_lats, gate_lons, flat_lats, flat_lons
+					except Exception:
+						pass
+					gc.collect()
+					# remove downloaded and decompressed files when present
+					try:
+						if os.path.exists(downloaded_file):
+							os.remove(downloaded_file)
+						# if ensure_uncompressed created a different file, remove it too
+						if local_file != downloaded_file and os.path.exists(local_file):
+							os.remove(local_file)
+					except Exception as e:
+						print(f"Warning cleaning temp files for {site}: {e}")
+					gc.collect()
+
+				except MemoryError as mem_err:
+					# Skip station on MemoryError, attempt to free memory and continue
+					print(f"MemoryError processing station {site}: {mem_err} -- skipping station")
+					generation_status["status"] = "Idle"
+					gc.collect()
+					continue
 				except Exception as station_err:
 					# Log error for this station and continue with the next one
 					errstr = str(station_err).lower()
@@ -440,9 +469,9 @@ def generate_radar_images_once():
 				print(f"Processing station {site}: s3://{bucket}/{key}")
 
 				# Download to local and pass local path to pyart
-				local_file = download_s3_object(bucket, key, dest_dir=output_dir)
+				downloaded_file = download_s3_object(bucket, key, dest_dir=output_dir)
 				try:
-					local_file = ensure_uncompressed(local_file)
+					local_file = ensure_uncompressed(downloaded_file)
 				except Exception as e:
 					errmsg = str(e).lower()
 					print(f"Skipping station {site} in one-shot run due to decompression error: {e}")
@@ -462,7 +491,8 @@ def generate_radar_images_once():
 
 				ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
 
-				fig = plt.figure(figsize=(16, 16))
+				# Lower memory usage: smaller figure + lower DPI
+				fig = plt.figure(figsize=(8, 8))
 				ax = fig.add_subplot(1, 1, 1)
 
 				display = pyart.graph.RadarMapDisplay(radar)
@@ -484,8 +514,10 @@ def generate_radar_images_once():
 				ax.patch.set_alpha(0)
 
 				output_file = f"{output_dir}/{site}.png"
-				plt.savefig(output_file, dpi=600, bbox_inches='tight', pad_inches=0, transparent=True)
-				plt.close()
+				fig.savefig(output_file, dpi=150, bbox_inches='tight', pad_inches=0, transparent=True)
+				plt.close(fig)
+				del fig, ax
+				gc.collect()
 
 				print(f"Saved radar image to: {output_file}")
 
