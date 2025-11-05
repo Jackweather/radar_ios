@@ -13,7 +13,7 @@ import os
 import glob
 import threading
 import time
-from flask import Flask, render_template, jsonify, url_for
+from flask import Flask, render_template, jsonify, url_for, request
 import requests
 import boto3
 from botocore import UNSIGNED
@@ -32,6 +32,9 @@ generation_status = {"status": "Idle", "last_updated": ""}
 recent_images = []
 # Flag to clear output folder on the first automated generation loop
 first_run = True
+
+# Add a lock to prevent race when multiple requests hit at once
+radar_thread_lock = threading.Lock()
 
 # Replace the previous download helpers and fs-based logic with boto3-based helpers
 def find_latest_level2_key(station, days_back=3):
@@ -469,17 +472,21 @@ def start_radar_thread_if_needed():
 	if start_opt not in ("1", "true", "yes", "on"):
 		print("Radar generator thread disabled via START_RADAR_GENERATOR environment variable.")
 		return
-	if not app.config.get("RADAR_THREAD_STARTED"):
-		thread = threading.Thread(target=generate_radar_images, daemon=True)
-		thread.start()
-		app.config["RADAR_THREAD_STARTED"] = True
-		print("Radar generator thread started.")
-	else:
-		print("Radar generator thread already started in this worker.")
+	# Use lock to avoid races when many requests arrive simultaneously
+	with radar_thread_lock:
+		if not app.config.get("RADAR_THREAD_STARTED"):
+			thread = threading.Thread(target=generate_radar_images, daemon=True)
+			thread.start()
+			app.config["RADAR_THREAD_STARTED"] = True
+			print("Radar generator thread started.")
+		else:
+			# already started in this worker
+			pass
 
-# Start the background thread on the first incoming request (works with gunicorn/render)
-@app.before_first_request
+# Replace before_first_request with before_request (works in all Flask/Werkzeug versions)
+@app.before_request
 def _start_thread():
+	# lightweight: start thread on first incoming request; subsequent requests skip quickly
 	start_radar_thread_if_needed()
 
 
