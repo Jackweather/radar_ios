@@ -261,7 +261,7 @@ def generate_radar_images():
 					print(f"MemoryError processing station {site}: {mem_err} -- skipping station")
 					generation_status["status"] = "Idle"
 					gc.collect()
-					continue
+					# fall through to finally to produce memdump and sleep
 				except Exception as station_err:
 					# Log error for this station and continue with the next one
 					errstr = str(station_err).lower()
@@ -275,7 +275,38 @@ def generate_radar_images():
 						"error": str(station_err),
 						"timestamp": timeStr
 					})
-					continue
+					# fall through to finally to produce memdump and sleep
+				finally:
+					# produce a small GC/memory dump and sleep 2s to reduce memory pressure
+					try:
+						gc.collect()
+						obj_count = None
+						try:
+							# len(gc.get_objects()) can be expensive; guard it
+							obj_count = len(gc.get_objects())
+						except Exception:
+							obj_count = None
+						mem_stats = {
+							"timestamp": dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+							"gc_counts": gc.get_count(),
+							"object_count": obj_count
+						}
+						try:
+							import resource
+							mem_stats["ru_maxrss"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+						except Exception:
+							mem_stats["ru_maxrss"] = None
+						memdump_file = os.path.join(output_dir, f"{site}_memdump_{timeStr}.json")
+						with open(memdump_file, 'w') as mf:
+							json.dump(mem_stats, mf)
+						print(f"Wrote memdump to: {memdump_file}")
+					except Exception as e:
+						print(f"Warning writing memdump for {site}: {e}")
+					# small delay between stations to help memory stabilization
+					try:
+						time.sleep(2)
+					except Exception:
+						pass
 
 			# mark idle when finished
 			generation_status["status"] = "Idle"
@@ -560,7 +591,37 @@ def generate_radar_images_once():
 					"error": str(station_err),
 					"timestamp": timeStr
 				})
-				continue
+				# fall through to finally to produce memdump and sleep
+			finally:
+				# produce a small GC/memory dump and sleep 2s to reduce memory pressure
+				try:
+					gc.collect()
+					obj_count = None
+					try:
+						obj_count = len(gc.get_objects())
+					except Exception:
+						obj_count = None
+					mem_stats = {
+						"timestamp": dt.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+						"gc_counts": gc.get_count(),
+						"object_count": obj_count
+					}
+					try:
+						import resource
+						mem_stats["ru_maxrss"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+					except Exception:
+						mem_stats["ru_maxrss"] = None
+					memdump_file = os.path.join(output_dir, f"{site}_memdump_{timeStr}.json")
+					with open(memdump_file, 'w') as mf:
+						json.dump(mem_stats, mf)
+					print(f"Wrote memdump to: {memdump_file}")
+				except Exception as e:
+					print(f"Warning writing memdump for {site} in one-shot run: {e}")
+				# small delay between stations to help memory stabilization
+				try:
+					time.sleep(2)
+				except Exception:
+					pass
 
 		generation_status["status"] = "Idle"
 		generation_status["last_updated"] = dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
