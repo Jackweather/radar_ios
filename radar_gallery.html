@@ -74,10 +74,27 @@
             const t = document.createElement('div');
             t.textContent = `${it.station} — ${it.timestamp}`;
             const img = document.createElement('img');
+            // server already provided cache-busted URL in it.image
             img.src = it.image;
             img.alt = `${it.station} ${it.timestamp}`;
             d.appendChild(t);
             d.appendChild(img);
+
+            // show json link below each thumbnail if available
+            const jb = document.createElement('div');
+            jb.className = 'json-file';
+            if (it.bounds_exists && it.bounds_url) {
+              const a = document.createElement('a');
+              a.href = it.bounds_url;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.textContent = `${it.station}_bounds.json`;
+              jb.appendChild(a);
+            } else {
+              jb.textContent = 'No bounds JSON';
+            }
+            d.appendChild(jb);
+
             g.appendChild(d);
           });
         })
@@ -86,7 +103,8 @@
         });
     }
     loadGallery();
-    setInterval(loadGallery, 5000);
+    // poll every 3 seconds to match downloader pause and reduce delay
+    setInterval(loadGallery, 3000);
   </script>
 </body>
 </html>
