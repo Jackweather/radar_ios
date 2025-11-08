@@ -19,8 +19,11 @@ from metpy.plots import ctables
 # -------------------------------
 # Settings
 # -------------------------------
-OUTPUT_DIR = os.path.join("static", "radar")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Put all generated files directly under this base directory
+BASE_DIR = '/var/data'
+os.makedirs(BASE_DIR, exist_ok=True)
+# For backward-compatibility use OUTPUT_DIR variable elsewhere in the file
+OUTPUT_DIR = BASE_DIR
 
 # List of radar stations to process (you can edit this)
 STATIONS = ["KENX", "KOKX", "KBGM", "KBUF", "KTYX",'KBOX']
@@ -132,11 +135,15 @@ def process_station(station, output_dir):
             "max_lon": float(np.max(gate_lons))
         }
 
+        # write bounds JSON into the same output directory as the PNG
         json_path = os.path.join(output_dir, f"{station}_bounds.json")
         with open(json_path, "w") as f:
             json.dump(bounds, f, indent=2)
 
-        print(f"✅ {station} complete — saved to {png_path}")
+        # Print both saved file locations (normalized absolute paths) so they are clear in the terminal
+        png_display = os.path.normpath(os.path.abspath(png_path))
+        json_display = os.path.normpath(os.path.abspath(json_path))
+        print(f"✅ {station} complete — png: {png_display}  json: {json_display}", flush=True)
 
         # Cleanup: remove files and free large objects explicitly
         try:
