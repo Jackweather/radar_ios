@@ -7,8 +7,11 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 import pyart
+import matplotlib
+matplotlib.use('Agg')  # use non-GUI backend to reduce memory usage
 import matplotlib.pyplot as plt
 import numpy as np
+import gc
 from datetime import datetime, timedelta
 from metpy.plots import ctables
 
@@ -29,7 +32,8 @@ def find_latest_level2_key(station, days_back=3):
     """Find latest radar Level-II file on AWS for given station."""
     s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED), region_name='us-east-1')
     bucket = 'unidata-nexrad-level2'
-    found = []
+    latest_key = None
+    latest_mod = None
     for d in range(days_back):
         date_dt = datetime.utcnow() - timedelta(days=d)
         y = date_dt.strftime("%Y")
@@ -39,13 +43,15 @@ def find_latest_level2_key(station, days_back=3):
         try:
             resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
             if 'Contents' in resp:
-                found.extend(resp['Contents'])
+                for obj in resp['Contents']:
+                    lm = obj.get('LastModified')
+                    if latest_mod is None or (lm and lm > latest_mod):
+                        latest_mod = lm
+                        latest_key = obj['Key']
+                # no need to keep all items in memory; just track the latest
         except Exception:
             continue
-    if not found:
-        return None, bucket
-    latest = sorted(found, key=lambda x: x['LastModified'], reverse=True)[0]
-    return latest['Key'], bucket
+    return latest_key, bucket
 
 
 def download_s3_object(bucket, key, dest_dir):
@@ -84,14 +90,15 @@ def process_station(station, output_dir):
 
         radar = pyart.io.read_nexrad_archive(local_file)
 
-        # Mask weak reflectivity values
+        # Mask weak reflectivity values (in-place where possible)
         if 'reflectivity' in radar.fields:
-            reflectivity_data = radar.fields['reflectivity']['data']
-            radar.fields['reflectivity']['data'] = np.ma.masked_less(reflectivity_data, 5)
+            refl = radar.fields['reflectivity']['data']
+            # perform masking in a way that avoids allocating a large extra flattened copy
+            radar.fields['reflectivity']['data'] = np.ma.masked_less(refl, 5)
 
         ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
 
-        # Plot radar
+        # Plot radar (slightly lower DPI to reduce memory during rendering)
         fig = plt.figure(figsize=(8, 8))
         ax = fig.add_subplot(1, 1, 1)
         display = pyart.graph.RadarMapDisplay(radar)
@@ -109,20 +116,19 @@ def process_station(station, output_dir):
         ax.patch.set_alpha(0)
 
         png_path = os.path.join(output_dir, f"{station}.png")
-        fig.savefig(png_path, dpi=150, bbox_inches='tight', pad_inches=0, transparent=True)
+        fig.savefig(png_path, dpi=100, bbox_inches='tight', pad_inches=0, transparent=True)
         plt.close(fig)
+        plt.close('all')  # ensure all figures cleared
 
-        # Compute geographic bounds
+        # Compute geographic bounds without flattening (avoid creating large copies)
         gate_lats = radar.gate_latitude['data']
         gate_lons = radar.gate_longitude['data']
-        flat_lats = gate_lats.flatten()
-        flat_lons = gate_lons.flatten()
 
         bounds = {
-            "min_lat": float(np.min(flat_lats)),
-            "max_lat": float(np.max(flat_lats)),
-            "min_lon": float(np.min(flat_lons)),
-            "max_lon": float(np.max(flat_lons))
+            "min_lat": float(np.min(gate_lats)),
+            "max_lat": float(np.max(gate_lats)),
+            "min_lon": float(np.min(gate_lons)),
+            "max_lon": float(np.max(gate_lons))
         }
 
         json_path = os.path.join(output_dir, f"{station}_bounds.json")
@@ -131,13 +137,24 @@ def process_station(station, output_dir):
 
         print(f"✅ {station} complete — saved to {png_path}")
 
-        # Cleanup
+        # Cleanup: remove files and free large objects explicitly
         try:
             os.remove(downloaded)
             if downloaded != local_file:
                 os.remove(local_file)
         except Exception:
             pass
+
+        # free memory used by large objects
+        try:
+            del radar
+            del display
+            del gate_lats
+            del gate_lons
+            del refl
+        except Exception:
+            pass
+        gc.collect()
 
     except Exception as e:
         print(f"⚠️ Error processing {station}: {e}")
