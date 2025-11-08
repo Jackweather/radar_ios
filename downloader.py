@@ -146,18 +146,16 @@ def process_station(station, output_dir):
         except Exception:
             pass
 
-        # free memory used by large objects
+        # aggressively drop references and run GC
         try:
-            del radar
-            del display
-            del gate_lats
-            del gate_lons
-            del refl
+            for _name in ('radar', 'display', 'gate_lats', 'gate_lons', 'refl', 'fig', 'ax'):
+                if _name in locals():
+                    locals().pop(_name, None)
         except Exception:
             pass
+        plt.close('all')
         gc.collect()
-        # pause briefly to allow OS to reclaim resources before next station
-        time.sleep(3)
+        gc.collect()  # run twice to be sure large objects are reclaimed
 
     except Exception as e:
         print(f"⚠️ Error processing {station}: {e}")
@@ -170,8 +168,13 @@ def run_all(output_dir=OUTPUT_DIR):
     """Run processing for all stations once."""
     for stn in STATIONS:
         process_station(stn, output_dir)
+        # ensure we pause between stations in the main loop
+        print("⏳ waiting 3s before next station...", flush=True)
+        time.sleep(3)
+        gc.collect()
     print("\n🎉 All stations processed! PNG + JSON saved in static/radar/")
-
 if __name__ == "__main__":
-    # When executed directly, run once
+    # When executed directly, run once= "__main__":
+    run_all()    # When executed directly, run once
+
     run_all()
