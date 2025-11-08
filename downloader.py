@@ -82,7 +82,9 @@ def process_station(station, output_dir):
         downloaded = download_s3_object(bucket, key, dest_dir=tmp_dir)
         local_file = ensure_uncompressed(downloaded)
 
-        with pyart.io.read_nexrad_archive(local_file) as radar:
+        # read_nexrad_archive returns a Radar object (not a context manager)
+        radar = pyart.io.read_nexrad_archive(local_file)
+        try:
             if "reflectivity" not in radar.fields:
                 print(f"⚠️ No reflectivity data for {station}")
                 return
@@ -117,6 +119,13 @@ def process_station(station, output_dir):
             }
             with open(os.path.join(output_dir, f"{station}_bounds.json"), "w") as f:
                 json.dump(bounds, f, indent=2)
+        finally:
+            # explicitly drop the radar reference so memory can be freed
+            try:
+                del radar
+            except Exception:
+                pass
+            gc.collect()
 
         print(f"✅ {station} done")
 
