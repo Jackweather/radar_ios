@@ -136,7 +136,7 @@ def run_generation():
 
 @app.route('/run-task1', methods=['POST', 'GET'])
 def run_task1():
-    """Start a list of scripts in a background thread and return immediately."""
+    """Start downloader.py in a background thread and return immediately."""
     def run_all_scripts():
         try:
             user = getpass.getuser()
@@ -144,34 +144,36 @@ def run_task1():
             user = 'unknown'
         print(f"Background task: running scripts as user: {user}")
 
-        scripts = [
-            ("/opt/render/project/src/downloader.py", "/opt/render/project/src/downloader"),
-        ]
+        # Replace the hardcoded scripts list with a portable downloader invocation
+        downloader_path = os.path.join(os.path.dirname(__file__), 'downloader.py')
+        cwd = os.path.dirname(__file__)
+        if not os.path.exists(downloader_path):
+            print(f"Background task error: downloader.py not found at {downloader_path}")
+            return
 
-        for script, cwd in scripts:
-            try:
-                print(f"Running {script} (cwd={cwd})")
-                result = subprocess.run(
-                    ["python", script],
-                    check=True,
-                    cwd=cwd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                print(f"{os.path.basename(script)} ran successfully.")
-                if result.stdout:
-                    print("STDOUT:", result.stdout)
-                if result.stderr:
-                    print("STDERR:", result.stderr)
-            except subprocess.CalledProcessError as e:
-                print(f"Error running {os.path.basename(script)}: returncode={getattr(e,'returncode', 'unknown')}")
-                print("STDOUT:", getattr(e, 'stdout', ''))
-                print("STDERR:", getattr(e, 'stderr', ''))
-                print(traceback.format_exc())
-            except Exception as ex:
-                print(f"Unexpected error running {script}: {ex}")
-                print(traceback.format_exc())
+        try:
+            print(f"Running downloader.py (cwd={cwd})")
+            result = subprocess.run(
+                ["python", downloader_path],
+                check=True,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            print("downloader.py ran successfully.")
+            if result.stdout:
+                print("STDOUT:", result.stdout)
+            if result.stderr:
+                print("STDERR:", result.stderr)
+        except subprocess.CalledProcessError as e:
+            print(f"Error running downloader.py: returncode={getattr(e,'returncode','unknown')}")
+            print("STDOUT:", getattr(e, 'stdout', ''))
+            print("STDERR:", getattr(e, 'stderr', ''))
+            print(traceback.format_exc())
+        except Exception as ex:
+            print(f"Unexpected error running downloader.py: {ex}")
+            print(traceback.format_exc())
 
     threading.Thread(target=run_all_scripts, daemon=True).start()
     return ("Task started in background. Check server logs for output.", 202)
