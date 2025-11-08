@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import gc
 import time
+import sys
+import subprocess
 from datetime import datetime, timedelta
 from metpy.plots import ctables
 
@@ -146,10 +148,27 @@ def process_station(station, output_dir):
 # Main
 # -------------------------------
 def run_all(output_dir=OUTPUT_DIR):
+    """Run each station in its own Python subprocess so memory is reclaimed on exit."""
     for stn in STATIONS:
-        process_station(stn, output_dir)
-    print("\n🎉 All stations processed! Files saved in static/radar/")
+        print(f"→ launching subprocess for {stn} ...", flush=True)
+        cmd = [sys.executable, os.path.abspath(__file__), "--station", stn]
+        try:
+            # capture and print subprocess output so you still see progress in the parent terminal
+            res = subprocess.run(cmd, cwd=os.path.dirname(__file__), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            print(res.stdout, end="", flush=True)
+            if res.returncode != 0:
+                print(f"⚠️ Subprocess for {stn} exited with code {res.returncode}", flush=True)
+        except Exception as e:
+            print(f"⚠️ Failed to run subprocess for {stn}: {e}", flush=True)
+        # brief pause between subprocesses
+        time.sleep(1)
+    print("\n🎉 All stations processed (each in its own subprocess).", flush=True)
 
 
 if __name__ == "__main__":
-    run_all()
+    # CLI: allow running a single station in-process (used by the subprocess approach above)
+    if len(sys.argv) >= 3 and sys.argv[1] == "--station":
+        station_id = sys.argv[2]
+        process_station(station_id, OUTPUT_DIR)
+    else:
+        run_all()
