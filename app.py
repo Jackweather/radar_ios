@@ -3,8 +3,11 @@ import os
 import time
 import base64
 import datetime
-import threading
 import json
+import subprocess
+import threading
+import traceback
+import getpass
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
@@ -23,9 +26,6 @@ stations = [
 _PLACEHOLDER_PNG = base64.b64decode(
     b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII='
 )
-
-# Ensure downloader module is importable and expose run_all
-import downloader
 
 def list_radar_files():
     """Return list of radar files in static/radar sorted by mtime desc."""
@@ -61,37 +61,6 @@ def latest_for_station(station_id):
         if item['station'] == station_id:
             return item['image']
     return None
-
-def start_periodic_downloader(interval_seconds=300):
-    """Start a background thread that runs downloader.run_all() every interval_seconds until all stations are present."""
-    def worker():
-        # Run immediately, then repeat until all stations have both PNG and bounds JSON
-        while True:
-            try:
-                print("Periodic downloader: starting run_all()")
-                downloader.run_all()
-            except Exception as e:
-                print(f"Periodic downloader error during run_all(): {e}")
-
-            # Check whether each station has both PNG and bounds JSON in RADAR_DIR
-            all_done = True
-            for s in stations:
-                png_path = os.path.join(RADAR_DIR, f"{s['id']}.png")
-                json_path = os.path.join(RADAR_DIR, f"{s['id']}_bounds.json")
-                if not (os.path.exists(png_path) and os.path.exists(json_path)):
-                    all_done = False
-                    break
-
-            if all_done:
-                print("Periodic downloader: all stations processed — stopping periodic runs.")
-                return  # exit thread
-
-            print(f"Periodic downloader: not complete yet, sleeping for {interval_seconds} seconds")
-            time.sleep(interval_seconds)
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    return t
 
 @app.route('/', endpoint='index')
 def root():
@@ -165,16 +134,48 @@ def run_generation():
         created.append(fn)
     return jsonify({'message': f'Created {len(created)} placeholder images and bounds JSON.', 'files': created})
 
+@app.route('/run-task1', methods=['POST', 'GET'])
+def run_task1():
+    """Start a list of scripts in a background thread and return immediately."""
+    def run_all_scripts():
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = 'unknown'
+        print(f"Background task: running scripts as user: {user}")
+
+        scripts = [
+            ("/opt/render/project/src/downloader.py", "/opt/render/project/src/downloader"),
+        ]
+
+        for script, cwd in scripts:
+            try:
+                print(f"Running {script} (cwd={cwd})")
+                result = subprocess.run(
+                    ["python", script],
+                    check=True,
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                print(f"{os.path.basename(script)} ran successfully.")
+                if result.stdout:
+                    print("STDOUT:", result.stdout)
+                if result.stderr:
+                    print("STDERR:", result.stderr)
+            except subprocess.CalledProcessError as e:
+                print(f"Error running {os.path.basename(script)}: returncode={getattr(e,'returncode', 'unknown')}")
+                print("STDOUT:", getattr(e, 'stdout', ''))
+                print("STDERR:", getattr(e, 'stderr', ''))
+                print(traceback.format_exc())
+            except Exception as ex:
+                print(f"Unexpected error running {script}: {ex}")
+                print(traceback.format_exc())
+
+    threading.Thread(target=run_all_scripts, daemon=True).start()
+    return ("Task started in background. Check server logs for output.", 202)
+
 if __name__ == '__main__':
-    # Start periodic downloader once (avoid double-start with Flask reloader)
-    # When using debug mode, Werkzeug starts a child process; WERKZEUG_RUN_MAIN is set in the reloader child.
-    start_thread = True
-    if app.debug:
-        # Only start in the reloader child process to avoid duplicated threads
-        start_thread = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
-
-    if start_thread:
-        start_periodic_downloader(interval_seconds=300)
-
     # Run the app for local testing
     app.run(host='0.0.0.0', port=5000, debug=True)
