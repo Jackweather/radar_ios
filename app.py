@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request, url_for, redirect, send_from_directory
+from flask import Flask, render_template, jsonify, request, url_for, redirect
 import os
 import time
 import base64
@@ -11,11 +11,9 @@ import getpass
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
-# Base directory where downloader now writes files
-BASE_DIR = '/var/data'
-os.makedirs(BASE_DIR, exist_ok=True)
-# App will list/serve images and JSON from BASE_DIR
-RADAR_DIR = BASE_DIR
+# Ensure radar static directory exists
+RADAR_DIR = os.path.join(os.path.dirname(__file__), 'static', 'radar')
+os.makedirs(RADAR_DIR, exist_ok=True)
 
 # Minimal set of stations used by templates (id, lat, lon, bounds)
 stations = [
@@ -30,7 +28,7 @@ _PLACEHOLDER_PNG = base64.b64decode(
 )
 
 def list_radar_files():
-    """Return list of radar files in RADAR_DIR sorted by mtime desc."""
+    """Return list of radar files in static/radar sorted by mtime desc."""
     items = []
     try:
         files = [f for f in os.listdir(RADAR_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
@@ -39,8 +37,7 @@ def list_radar_files():
     files.sort(key=lambda f: os.path.getmtime(os.path.join(RADAR_DIR, f)), reverse=True)
     for fn in files:
         path = os.path.join(RADAR_DIR, fn)
-        mtime = int(os.path.getmtime(path))
-        ts = datetime.datetime.fromtimestamp(mtime).isoformat()
+        ts = datetime.datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
         # Determine station id robustly: basename without extension, take part before first underscore
         basename_no_ext = os.path.splitext(fn)[0]
         station = basename_no_ext.split('_')[0]
@@ -48,24 +45,16 @@ def list_radar_files():
         bounds_filename = f"{station}_bounds.json"
         bounds_path = os.path.join(RADAR_DIR, bounds_filename)
         bounds_exists = os.path.exists(bounds_path)
-        # Append cache-busting query param using file mtime so browser reloads when file changes
-        image_url = url_for('data_file', filename=fn) + f"?v={mtime}"
-        bounds_url = (url_for('data_file', filename=bounds_filename) + f"?v={int(os.path.getmtime(bounds_path))}") if bounds_exists else None
+        bounds_url = url_for('static', filename='radar/' + bounds_filename) if bounds_exists else None
         items.append({
             'file': fn,
-            'image': image_url,
+            'image': url_for('static', filename='radar/' + fn),
             'station': station,
             'timestamp': ts,
             'bounds_exists': bounds_exists,
-            'bounds_url': bounds_url,
-            'mtime': mtime
+            'bounds_url': bounds_url
         })
     return items
-
-@app.route('/data/<path:filename>')
-def data_file(filename):
-    """Serve files from BASE_DIR (where downloader writes PNG/JSON). Disable caching."""
-    return send_from_directory(RADAR_DIR, filename, as_attachment=False, cache_timeout=0)
 
 def latest_for_station(station_id):
     for item in list_radar_files():
@@ -135,7 +124,6 @@ def run_generation():
                 "png": fn
             }
 
-        # write generated bounds JSON into the same RADAR_DIR so the gallery can find it
         json_path = os.path.join(RADAR_DIR, f"{s['id']}_bounds.json")
         try:
             with open(json_path, 'w') as jf:
