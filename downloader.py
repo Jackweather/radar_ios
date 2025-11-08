@@ -12,6 +12,7 @@ matplotlib.use('Agg')  # use non-GUI backend to reduce memory usage
 import matplotlib.pyplot as plt
 import numpy as np
 import gc
+import time
 from datetime import datetime, timedelta
 from metpy.plots import ctables
 
@@ -155,6 +156,8 @@ def process_station(station, output_dir):
         except Exception:
             pass
         gc.collect()
+        # pause briefly to allow OS to reclaim resources before next station
+        time.sleep(3)
 
     except Exception as e:
         print(f"⚠️ Error processing {station}: {e}")
