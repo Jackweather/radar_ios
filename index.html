@@ -1,0 +1,325 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Static /radar — Index</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;padding:12px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    .item{border:1px solid #ddd;padding:8px;border-radius:6px;background:#fafafa;display:flex;gap:8px;align-items:flex-start}
+    .thumb{width:96px;height:72px;background:#eee;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px}
+    .thumb img{max-width:100%;max-height:100%}
+    .meta{flex:1;min-width:0}
+    .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .actions{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+    pre{max-height:240px;overflow:auto;background:#111;color:#dcdcdc;padding:8px;border-radius:4px}
+
+    /* snippet preview styling */
+    .snippet {
+      margin-top:8px;
+      max-height:120px;
+      overflow:auto;
+      background:#f6f8fa;
+      border:1px solid #e6e6e6;
+      padding:8px;
+      font-family:monospace;
+      font-size:12px;
+      color:#222;
+      border-radius:4px;
+      white-space:pre-wrap;
+    }
+
+    /* Modal styles for full JSON view */
+    .modal {
+      position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.6); z-index:1200; padding:24px;
+    }
+    .modal.open { display:flex; }
+    .modal-panel {
+      background:white; width:95%; max-width:1200px; max-height:90%; border-radius:8px; overflow:hidden; display:flex; flex-direction:column;
+      box-shadow:0 8px 40px rgba(0,0,0,0.4);
+    }
+    .modal-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-bottom:1px solid #eee; background:#fafafa; }
+    .modal-body { padding:12px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace; font-size:14px; color:#222; background:#fff; }
+    .modal-pre { white-space:pre; line-height:1.45; font-size:13px; tab-size:2; word-break:break-word; }
+
+    /* JSON token colors */
+    .j-key { color:#b36b00; font-weight:600; }
+    .j-string { color:#0b6b0b; }
+    .j-number { color:#004b99; }
+    .j-literal { color:#a31515; font-weight:600; }
+    .j-punct { color:#333; }
+
+    /* make snippet monospace and use highlighting */
+    .snippet { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size:12px; color:#222; }
+    .preview-link a { color:#0078d4; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <h2>/static/radar</h2>
+  <p id="hint">Trying to enumerate files from /static/radar/ ...</p>
+  <div id="list" class="grid"></div>
+
+  <!-- JSON Modal (hidden until needed) -->
+  <div id="jsonModal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-panel" role="document">
+      <div class="modal-header">
+        <div>
+          <strong id="jsonTitle">JSON</strong>
+          <span id="jsonInfo" class="json-meta"></span>
+        </div>
+        <div class="modal-actions">
+          <button id="jsonRaw" class="btn small" title="Open raw in new tab">Raw</button>
+          <button id="jsonToggle" class="btn small" title="Toggle formatted/raw">Raw</button>
+          <button id="jsonDownload" class="btn small" title="Download JSON">Download</button>
+          <button id="jsonCopy" class="btn small" title="Copy to clipboard">Copy</button>
+          <button id="jsonClose" class="btn small" title="Close">Close</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <pre id="jsonContent" class="modal-pre">Loading...</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+(async function(){
+  const basePath = '/static/radar/';
+  const listEl = document.getElementById('list');
+  const hint = document.getElementById('hint');
+
+  async function tryListJson(){
+    try{
+      const resp = await fetch(basePath + 'list.json', {cache:'no-store'});
+      if(!resp.ok) return null;
+      const arr = await resp.json();
+      if(Array.isArray(arr)) return arr.map(n=>({name:n}));
+      return null;
+    }catch(e){ return null; }
+  }
+
+  // new: try the Flask endpoint that returns recent images/files
+  async function tryRecentImages(){
+    try{
+      const resp = await fetch('/recent-images', {cache:'no-store'});
+      if(!resp.ok) return null;
+      const arr = await resp.json();
+      if(!Array.isArray(arr)) return null;
+      // server returns objects with 'file' (and other metadata) — normalize to {name}
+      return arr.map(item => ({ name: item.file || item }));
+    }catch(e){
+      return null;
+    }
+  }
+
+  async function tryDirHtml(){
+    try{
+      const resp = await fetch(basePath, {cache:'no-store'});
+      if(!resp.ok) return null;
+      const text = await resp.text();
+      const doc = new DOMParser().parseFromString(text,'text/html');
+      const anchors = Array.from(doc.querySelectorAll('a')).map(a=>a.getAttribute('href')).filter(h=>h && h !== '../');
+      if(anchors.length===0) return null;
+      // normalize and unique
+      const names = [...new Set(anchors.map(h=>decodeURIComponent(h.split('?')[0].replace(/\/$/, ''))))].filter(n=>n);
+      return names.map(n=>({name:n}));
+    }catch(e){ return null; }
+  }
+
+  function elt(tag, txt){ const e=document.createElement(tag); if(txt!==undefined) e.textContent = txt; return e; }
+
+  // Modal helpers
+  const modal = document.getElementById('jsonModal');
+  const jsonContent = document.getElementById('jsonContent');
+  const jsonTitle = document.getElementById('jsonTitle');
+  const jsonInfo = document.getElementById('jsonInfo');
+  const jsonRaw = document.getElementById('jsonRaw');
+  const jsonToggle = document.getElementById('jsonToggle');
+  const jsonDownload = document.getElementById('jsonDownload');
+  const jsonCopy = document.getElementById('jsonCopy');
+  const jsonClose = document.getElementById('jsonClose');
+
+  let currentJsonText = null;
+  let currentJsonUrl = null;
+  let showRaw = false;
+
+  // Threshold for "large" JSON (characters). Above this we'll avoid heavy highlighting/rendering.
+  const LARGE_THRESHOLD = 100000; // ~100 KB
+
+  // small HTML-escape helper
+  function escapeHtml(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Simple JSON highlighter: attempts to pretty-print then wraps tokens in spans.
+  // Keep this fast and avoid calling on very large inputs.
+  function highlightJson(text){
+    if(!text) return '';
+    // if large, throw so caller can handle differently
+    if(text.length > LARGE_THRESHOLD) throw new Error('TOO_LARGE');
+    let pretty = text;
+    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch(e) { /* fallback to raw */ }
+    const esc = escapeHtml(pretty);
+
+    // Highlight keys (quoted strings followed by colon)
+    const keyed = esc.replace(/(&quot;.*?&quot;)(\s*:)/g, '<span class="j-key">$1</span><span class="j-punct">$2</span>');
+    // Highlight remaining strings (not keys)
+    const strings = keyed.replace(/(&quot;(?:\\.|[^"&quot;])*&quot;)(?!\s*:)/g, '<span class="j-string">$1</span>');
+    // Numbers
+    const numbers = strings.replace(/\b(-?\d+(\.\d+)?([eE][+-]?\d+)?)\b/g, '<span class="j-number">$1</span>');
+    // booleans & null
+    const lit = numbers.replace(/\b(true|false|null)\b/g, '<span class="j-literal">$1</span>');
+    return '<pre class="modal-pre">' + lit + '</pre>';
+  }
+
+  function openModal(title, info, jsonText, rawUrl){
+    jsonTitle.textContent = title || 'JSON';
+    jsonInfo.textContent = info || '';
+    currentJsonText = jsonText || '';
+    currentJsonUrl = rawUrl || null;
+    showRaw = false;
+
+    // If JSON is large, avoid heavy highlight/render; show truncated preview + actions
+    if((currentJsonText || '').length > LARGE_THRESHOLD){
+      const head = escapeHtml((currentJsonText || '').slice(0, 8000)); // show up to ~8k chars safely
+      jsonContent.innerHTML = '<div style="padding:6px;color:#700;">File too large to render fully in the browser (' + Math.round((currentJsonText.length/1024)) + ' KB). Showing start of file below.</div><pre class="modal-pre">' + head + (currentJsonText.length > 8000 ? '\n\n...truncated...' : '') + '</pre>';
+      jsonToggle.textContent = 'Raw';
+      // offer a safe "open raw" (already available) — do not wire toggle to attempt heavy highlighting
+      jsonToggle.onclick = ()=> { if(currentJsonUrl) window.open(currentJsonUrl, '_blank'); };
+    } else {
+      // default: show formatted/highlighted view (if possible)
+      try {
+        jsonContent.innerHTML = highlightJson(currentJsonText || '');
+        jsonToggle.textContent = 'Raw';
+        // toggle between formatted and raw
+        jsonToggle.onclick = ()=> {
+          showRaw = !showRaw;
+          if(showRaw){
+            jsonContent.textContent = currentJsonText || '';
+            jsonToggle.textContent = 'Formatted';
+          } else {
+            try{ jsonContent.innerHTML = highlightJson(currentJsonText || ''); } catch(e){ jsonContent.textContent = currentJsonText || ''; }
+            jsonToggle.textContent = 'Raw';
+          }
+        };
+      } catch(e) {
+        // fallback if highlightJson refused (e.g. too large) or errored
+        jsonContent.textContent = currentJsonText || '';
+        jsonToggle.textContent = 'Raw';
+        jsonToggle.onclick = ()=> { if(currentJsonUrl) window.open(currentJsonUrl, '_blank'); };
+      }
+    }
+
+    jsonRaw.onclick = ()=> { if(currentJsonUrl) window.open(currentJsonUrl, '_blank'); };
+    jsonDownload.onclick = ()=> {
+      const blob = new Blob([currentJsonText||''], {type:'application/json'});
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = u; a.download = (title || 'data') + '.json'; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(u);
+    };
+    jsonCopy.onclick = async ()=> {
+      try{ await navigator.clipboard.writeText(currentJsonText || ''); jsonCopy.textContent = 'Copied'; setTimeout(()=>jsonCopy.textContent='Copy',1200);}catch(e){ alert('Copy failed'); }
+    };
+    jsonClose.onclick = closeModal;
+    modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+  }
+  function closeModal(){
+    modal.classList.remove('open'); modal.setAttribute('aria-hidden','true');
+    jsonContent.textContent = '';
+    currentJsonText = null; currentJsonUrl = null;
+    showRaw = false;
+  }
+  // close on backdrop click
+  modal.addEventListener('click', (ev)=>{ if(ev.target === modal) closeModal(); });
+
+  function renderItem(obj){
+    const name = obj.name;
+    // build URL without double-encoding for better raw access; encodeURI for safety but preserve common characters
+    const url = basePath + encodeURIComponent(name);
+    const it = document.createElement('div'); it.className='item';
+    const thumb = document.createElement('div'); thumb.className='thumb';
+    const meta = document.createElement('div'); meta.className='meta';
+    meta.appendChild(elt('div', name)); meta.querySelector('.meta > div').className='name';
+    const actions = document.createElement('div'); actions.className='actions';
+    const openBtn = document.createElement('a'); openBtn.textContent='Open in viewer'; openBtn.href = `/viewer.html?load=${encodeURIComponent(url)}`; openBtn.target='_blank';
+    actions.appendChild(openBtn);
+    const previewBtn = document.createElement('button'); previewBtn.textContent='Preview'; previewBtn.type='button';
+    actions.appendChild(previewBtn);
+    meta.appendChild(actions);
+
+    const lower = name.toLowerCase();
+    if(/\.(png|jpe?g|gif|webp|svg)$/i.test(lower)){
+      const img = document.createElement('img'); img.src = url; img.alt = name;
+      img.onload = ()=>{ thumb.innerHTML=''; thumb.appendChild(img); };
+      img.onerror = ()=>{ thumb.textContent = 'img'; };
+      it.appendChild(thumb); it.appendChild(meta);
+      listEl.appendChild(it);
+      return;
+    } else {
+      thumb.textContent = name.split('.').pop().toUpperCase();
+    }
+
+    // JSON-specific: show only a "Preview" button that opens the full JSON modal
+    if(/\.(json)$/i.test(lower)){
+      // cache holder
+      obj._cachedJsonText = null;
+
+      // clicking preview fetches full JSON (if not cached) and opens modal
+      const openFull = async ()=>{
+        if(obj._cachedJsonText){
+          openModal(name, '', obj._cachedJsonText, url);
+          return;
+        }
+        try{
+          const r = await fetch(url, {cache:'no-store'});
+          if(!r.ok) throw new Error('HTTP '+r.status);
+          const txt = await r.text();
+          let pretty = txt;
+          try{ const j = JSON.parse(txt); pretty = JSON.stringify(j, null, 2); }catch(e){}
+          obj._cachedJsonText = pretty;
+          openModal(name, '', pretty, url);
+        }catch(e){
+          alert('Failed to load JSON: '+(e && e.message ? e.message : e));
+        }
+      };
+
+      // wire up preview button (remove snippet UI entirely)
+      previewBtn.addEventListener('click', openFull);
+
+      it.appendChild(thumb); it.appendChild(meta);
+      listEl.appendChild(it);
+      return;
+    }
+
+    // other file types: simple download link on preview
+    previewBtn.addEventListener('click', async ()=>{
+      const ex = it.querySelector('pre, div.preview-link');
+      if(ex) { ex.remove(); return; }
+      const dl = document.createElement('div'); dl.className='preview-link'; dl.innerHTML = `<a href="${url}" target="_blank">Open / download</a>`; it.appendChild(dl);
+    });
+
+    it.appendChild(thumb); it.appendChild(meta);
+    listEl.appendChild(it);
+  }
+
+  // try JSON list first, then server API, then directory HTML parse
+  hint.textContent = 'Looking for list.json...';
+  let items = await tryListJson();
+  if(!items){
+    hint.textContent = 'Trying server API (/recent-images)...';
+    items = await tryRecentImages();
+  }
+  if(!items){
+    hint.textContent = 'Trying directory HTML parse...';
+    items = await tryDirHtml();
+  }
+  if(!items || items.length===0){
+    hint.textContent = 'No files enumerated. If your server does not expose a directory listing, create static/radar/list.json (array of filenames) or use the provided /recent-images API.';
+    return;
+  }
+  hint.textContent = `Found ${items.length} item(s)`;
+  items.forEach(renderItem);
+})();
+</script>
+</body>
+</html>
