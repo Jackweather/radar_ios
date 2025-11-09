@@ -5,6 +5,7 @@
   <title>Static /radar — Index</title>
   <style>
     body{font-family:Arial,Helvetica,sans-serif;padding:12px}
+    .meta .mtime { font-size:12px; color:#666; margin-top:4px; }
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
     .item{border:1px solid #ddd;padding:8px;border-radius:6px;background:#fafafa;display:flex;gap:8px;align-items:flex-start}
     .thumb{width:96px;height:72px;background:#eee;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px}
@@ -125,8 +126,8 @@
       if(!resp.ok) return null;
       const arr = await resp.json();
       if(!Array.isArray(arr)) return null;
-      // server returns objects with 'file' (and other metadata) — normalize to {name}
-      return arr.map(item => ({ name: item.file || item }));
+      // server returns objects with 'file' (and other metadata) — normalize to {name, timestamp}
+      return arr.map(item => ({ name: item.file || item, timestamp: item.timestamp || item.time || null }));
     }catch(e){
       return null;
     }
@@ -147,6 +148,17 @@
   }
 
   function elt(tag, txt){ const e=document.createElement(tag); if(txt!==undefined) e.textContent = txt; return e; }
+
+  function formatTimestamp(ts){
+    if(!ts) return '';
+    try{
+      const d = new Date(ts);
+      if(isNaN(d)) return ts;
+      return d.toLocaleString();
+    }catch(e){
+      return ts;
+    }
+  }
 
   // Modal helpers
   const modal = document.getElementById('jsonModal');
@@ -312,7 +324,14 @@
     const it = document.createElement('div'); it.className='item';
     const thumb = document.createElement('div'); thumb.className='thumb';
     const meta = document.createElement('div'); meta.className='meta';
-    meta.appendChild(elt('div', name)); meta.querySelector('.meta > div').className='name';
+    // name
+    const nameDiv = elt('div', name); nameDiv.className = 'name';
+    meta.appendChild(nameDiv);
+    // timestamp / created-at (if available)
+    if(obj.timestamp){
+      const tsDiv = elt('div', formatTimestamp(obj.timestamp)); tsDiv.className = 'mtime';
+      meta.appendChild(tsDiv);
+    }
     const actions = document.createElement('div'); actions.className='actions';
     const openBtn = document.createElement('a'); openBtn.textContent='Open in viewer'; openBtn.href = `/viewer.html?load=${encodeURIComponent(url)}`; openBtn.target='_blank';
     actions.appendChild(openBtn);
@@ -404,7 +423,9 @@
   }
 
   // store and apply filters
-  itemsAll = items.map(it => ({ name: it.name })); // normalize
+  //  itemsAll = items.map(it => ({ name: it.name })); // normalize
+  // preserve timestamp where provided
+  itemsAll = items.map(it => ({ name: it.name, timestamp: it.timestamp || null })); // normalize
   hint.textContent = `Found ${itemsAll.length} item(s)`;
   applyFilters();
 })();
