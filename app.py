@@ -107,8 +107,26 @@ def gallery():
 
 @app.route('/recent-images')
 def recent_images():
-    # Return up to 10 recent images (most recent first)
-    return jsonify(list_radar_files()[:10])
+    """
+    Return recent radar files.
+    - By default this now returns all files in static/radar (most-recent first).
+    - Optional query param: ?limit=N to return up to N items (N>0).
+      If limit=0 or limit<0, all items are returned.
+    """
+    files = list_radar_files()
+    # Honor optional ?limit=N (if not provided, return all files)
+    try:
+        limit = request.args.get('limit', type=int)
+    except Exception:
+        limit = None
+    if limit is None:
+        # default: return all
+        selected = files
+    elif limit <= 0:
+        selected = files
+    else:
+        selected = files[:limit]
+    return jsonify(selected)
 
 @app.route('/status')
 def status():
@@ -198,6 +216,23 @@ def run_task1():
 
     threading.Thread(target=run_all_scripts, daemon=True).start()
     return ("Task started in background. Check server logs for output.", 202)
+
+@app.route('/file-link')
+def file_link():
+    """
+    Return a safe URL for a file in static/radar.
+    Query: ?filename=NAME
+    Response: { "url": "/static/radar/NAME" } or error.
+    """
+    fname = request.args.get('filename') or request.args.get('name') or ''
+    # prevent path traversal
+    safe_name = os.path.basename(fname)
+    if not safe_name:
+        return jsonify({'error': 'filename required'}), 400
+    path = os.path.join(RADAR_DIR, safe_name)
+    if not os.path.exists(path) or not os.path.isfile(path):
+        return jsonify({'error': 'not found'}), 404
+    return jsonify({'url': url_for('static', filename='radar/' + safe_name)})
 
 if __name__ == '__main__':
     # Run the app for local testing
