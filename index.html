@@ -67,7 +67,6 @@
   <!-- FILTER BAR -->
   <div class="filter-bar" aria-label="Filters">
     <div class="filter-group">
-      <label><input type="checkbox" id="f_images" checked> Images</label>
       <label><input type="checkbox" id="f_rdat" checked> RDAT</label>
       <label><input type="checkbox" id="f_loc" checked> Location JSON</label>
       <label><input type="checkbox" id="f_bounds" checked> Bounds JSON</label>
@@ -269,7 +268,6 @@
   }
 
   function applyFilters(){
-    const showImages = document.getElementById('f_images').checked;
     const showRdat = document.getElementById('f_rdat').checked;
     const showLoc = document.getElementById('f_loc').checked;
     const showBounds = document.getElementById('f_bounds').checked;
@@ -280,11 +278,11 @@
     const filtered = itemsAll.filter(it => {
       const c = classifyName(it.name);
       let ok = false;
-      if(c.isImage && showImages) ok = true;
+      // images are always shown (no images checkbox anymore)
+      if(c.isImage) ok = true;
       if(c.isRdat && showRdat) ok = true;
       if(c.isLocation && showLoc) ok = true;
       if(c.isBounds && showBounds) ok = true;
-      // if no type matched but a checkbox is unchecked, hide it (so only explicit types show)
       // apply search
       if(search && !c.nameLower.includes(search)) return false;
       return ok;
@@ -295,13 +293,11 @@
   }
 
   // wire filter inputs
-  document.getElementById('f_images').addEventListener('change', applyFilters);
   document.getElementById('f_rdat').addEventListener('change', applyFilters);
   document.getElementById('f_loc').addEventListener('change', applyFilters);
   document.getElementById('f_bounds').addEventListener('change', applyFilters);
   document.getElementById('f_search').addEventListener('input', applyFilters);
   document.getElementById('f_reset').addEventListener('click', ()=>{
-    document.getElementById('f_images').checked = true;
     document.getElementById('f_rdat').checked = true;
     document.getElementById('f_loc').checked = true;
     document.getElementById('f_bounds').checked = true;
@@ -322,10 +318,22 @@
     actions.appendChild(openBtn);
     const previewBtn = document.createElement('button'); previewBtn.textContent='Preview'; previewBtn.type='button';
     actions.appendChild(previewBtn);
+
+    // Add a direct download link for RDAT files (.rdat and .rdat.gz)
+    const lower = name.toLowerCase();
+    if(/\.(rdat)(\.gz)?$/i.test(lower)){
+      const dl = document.createElement('a');
+      dl.textContent = 'Download';
+      dl.href = url;
+      dl.setAttribute('download', name);
+      dl.target = '_blank';
+      dl.style.marginLeft = '6px';
+      actions.appendChild(dl);
+    }
     meta.appendChild(actions);
 
-    const lower = name.toLowerCase();
-    if(/\.(png|jpe?g|gif|webp|svg)$/i.test(lower)){
+    const lower2 = name.toLowerCase();
+    if(/\.(png|jpe?g|gif|webp|svg)$/i.test(lower2)){
       const img = document.createElement('img'); img.src = url; img.alt = name;
       img.onload = ()=>{ thumb.innerHTML=''; thumb.appendChild(img); };
       img.onerror = ()=>{ thumb.textContent = 'img'; };
