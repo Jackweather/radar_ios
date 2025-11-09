@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request, url_for, redirect
+from flask import Flask, render_template, jsonify, request, url_for, redirect, send_from_directory
 import os
 import time
 import base64
@@ -8,6 +8,7 @@ import subprocess
 import threading
 import traceback
 import getpass
+import sys
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
@@ -31,17 +32,23 @@ def list_radar_files():
     """Return list of radar files in static/radar sorted by mtime desc."""
     items = []
     try:
-        files = [f for f in os.listdir(RADAR_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
+        # include all regular files in the radar directory except the index/list helpers
+        files = [
+            f for f in os.listdir(RADAR_DIR)
+            if os.path.isfile(os.path.join(RADAR_DIR, f)) and f not in ('index.html', 'list.json')
+        ]
     except FileNotFoundError:
         files = []
     files.sort(key=lambda f: os.path.getmtime(os.path.join(RADAR_DIR, f)), reverse=True)
     for fn in files:
         path = os.path.join(RADAR_DIR, fn)
         ts = datetime.datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
-        # Determine station id robustly: basename without extension, take part before first underscore
+        # station guess: part before first underscore or whole basename
         basename_no_ext = os.path.splitext(fn)[0]
-        station = basename_no_ext.split('_')[0]
-        # Determine corresponding bounds JSON (station_bounds.json)
+        station = basename_no_ext.split('_')[0] if '_' in basename_no_ext else basename_no_ext
+        ext = os.path.splitext(fn)[1].lower()
+        is_image = ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg')
+        # station-level bounds
         bounds_filename = f"{station}_bounds.json"
         bounds_path = os.path.join(RADAR_DIR, bounds_filename)
         bounds_exists = os.path.exists(bounds_path)
@@ -51,6 +58,8 @@ def list_radar_files():
             'image': url_for('static', filename='radar/' + fn),
             'station': station,
             'timestamp': ts,
+            'ext': ext,
+            'is_image': is_image,
             'bounds_exists': bounds_exists,
             'bounds_url': bounds_url
         })
@@ -64,9 +73,32 @@ def latest_for_station(station_id):
 
 @app.route('/', endpoint='index')
 def root():
-    # Serve the gallery as the root page (radar.html)
-    images = list_radar_files()
-    return render_template('radar_gallery.html', images=images)
+    # Try serving index from templates first (preferred location)
+    try:
+        # look for a few possible template names
+        tpl_candidates = ['radar_index.html', 'index.html']
+        for tpl in tpl_candidates:
+            tpl_path = os.path.join(app.template_folder or 'templates', tpl)
+            if os.path.exists(tpl_path):
+                return render_template(tpl)
+    except Exception:
+        pass
+
+    # Next try a project-root index.html (if you moved the file to repo root)
+    try:
+        root_index = os.path.join(os.path.dirname(__file__), 'index.html')
+        if os.path.exists(root_index):
+            return send_from_directory(os.path.dirname(__file__), 'index.html')
+    except Exception:
+        pass
+
+    # Then try serving the legacy static/radar/index.html (backwards-compatible)
+    try:
+        return send_from_directory(RADAR_DIR, 'index.html')
+    except Exception:
+        # Fallback: preserve previous behavior if none of the static/index/template files are available
+        images = list_radar_files()
+        return render_template('radar_gallery.html', images=images)
 
 # Replace the previous index() function with a simple redirect to the named endpoint
 @app.route('/index')
@@ -136,43 +168,43 @@ def run_generation():
 
 @app.route('/run-task1', methods=['POST', 'GET'])
 def run_task1():
-    """Start downloader.py in a background thread and return immediately."""
+    """Start radar_in_json.py in a background thread and return immediately."""
     def run_all_scripts():
         try:
             user = getpass.getuser()
         except Exception:
             user = 'unknown'
-        print(f"Background task: running scripts as user: {user}")
+        print(f"Background task: running radar_in_json.py as user: {user}")
 
-        # Replace the hardcoded scripts list with a portable downloader invocation
-        downloader_path = os.path.join(os.path.dirname(__file__), 'downloader.py')
+        # point to radar_in_json.py instead of downloader.py
+        radar_script = os.path.join(os.path.dirname(__file__), 'radar_in_json.py')
         cwd = os.path.dirname(__file__)
-        if not os.path.exists(downloader_path):
-            print(f"Background task error: downloader.py not found at {downloader_path}")
+        if not os.path.exists(radar_script):
+            print(f"Background task error: radar_in_json.py not found at {radar_script}")
             return
 
         try:
-            print(f"Running downloader.py (cwd={cwd})")
+            print(f"Running radar_in_json.py (cwd={cwd})")
             result = subprocess.run(
-                ["python", downloader_path],
+                ["python", radar_script],
                 check=True,
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            print("downloader.py ran successfully.")
+            print("radar_in_json.py ran successfully.")
             if result.stdout:
                 print("STDOUT:", result.stdout)
             if result.stderr:
                 print("STDERR:", result.stderr)
         except subprocess.CalledProcessError as e:
-            print(f"Error running downloader.py: returncode={getattr(e,'returncode','unknown')}")
+            print(f"Error running radar_in_json.py: returncode={getattr(e,'returncode','unknown')}")
             print("STDOUT:", getattr(e, 'stdout', ''))
             print("STDERR:", getattr(e, 'stderr', ''))
             print(traceback.format_exc())
         except Exception as ex:
-            print(f"Unexpected error running downloader.py: {ex}")
+            print(f"Unexpected error running radar_in_json.py: {ex}")
             print(traceback.format_exc())
 
     threading.Thread(target=run_all_scripts, daemon=True).start()
