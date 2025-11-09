@@ -53,10 +53,31 @@
     /* make snippet monospace and use highlighting */
     .snippet { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size:12px; color:#222; }
     .preview-link a { color:#0078d4; text-decoration:none; }
+
+    /* filter bar */
+    .filter-bar { display:flex; gap:12px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+    .filter-group { display:flex; gap:6px; align-items:center; font-size:13px; color:#222; }
+    .filter-search { margin-left:8px; padding:6px 8px; border:1px solid #ddd; border-radius:6px; }
+    .filter-reset { background:#eee;border:1px solid #ccc;padding:6px 8px;border-radius:6px;cursor:pointer; }
   </style>
 </head>
 <body>
   <h2>/static/radar</h2>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar" aria-label="Filters">
+    <div class="filter-group">
+      <label><input type="checkbox" id="f_images" checked> Images</label>
+      <label><input type="checkbox" id="f_rdat" checked> RDAT</label>
+      <label><input type="checkbox" id="f_loc" checked> Location JSON</label>
+      <label><input type="checkbox" id="f_bounds" checked> Bounds JSON</label>
+    </div>
+    <div class="filter-group">
+      <input id="f_search" class="filter-search" placeholder="Search filename..." />
+      <button id="f_reset" class="filter-reset" title="Reset filters">Reset</button>
+    </div>
+  </div>
+
   <p id="hint">Trying to enumerate files from /static/radar/ ...</p>
   <div id="list" class="grid"></div>
 
@@ -232,6 +253,62 @@
   // close on backdrop click
   modal.addEventListener('click', (ev)=>{ if(ev.target === modal) closeModal(); });
 
+  // keep fetched items (original) and filtered view
+  let itemsAll = [];
+
+  // utility classification
+  function classifyName(name){
+    const lower = (name||'').toLowerCase();
+    return {
+      isImage: /\.(png|jpe?g|gif|webp|svg)$/i.test(lower),
+      isRdat: /\.rdat(\.gz)?$/i.test(lower),
+      isLocation: /_location\.json$/i.test(lower),
+      isBounds: /_bounds\.json$/i.test(lower),
+      nameLower: lower
+    };
+  }
+
+  function applyFilters(){
+    const showImages = document.getElementById('f_images').checked;
+    const showRdat = document.getElementById('f_rdat').checked;
+    const showLoc = document.getElementById('f_loc').checked;
+    const showBounds = document.getElementById('f_bounds').checked;
+    const search = (document.getElementById('f_search').value || '').trim().toLowerCase();
+
+    // clear list
+    listEl.innerHTML = '';
+    const filtered = itemsAll.filter(it => {
+      const c = classifyName(it.name);
+      let ok = false;
+      if(c.isImage && showImages) ok = true;
+      if(c.isRdat && showRdat) ok = true;
+      if(c.isLocation && showLoc) ok = true;
+      if(c.isBounds && showBounds) ok = true;
+      // if no type matched but a checkbox is unchecked, hide it (so only explicit types show)
+      // apply search
+      if(search && !c.nameLower.includes(search)) return false;
+      return ok;
+    });
+
+    hint.textContent = `Found ${filtered.length} item(s) (filtered)`;
+    filtered.forEach(renderItem);
+  }
+
+  // wire filter inputs
+  document.getElementById('f_images').addEventListener('change', applyFilters);
+  document.getElementById('f_rdat').addEventListener('change', applyFilters);
+  document.getElementById('f_loc').addEventListener('change', applyFilters);
+  document.getElementById('f_bounds').addEventListener('change', applyFilters);
+  document.getElementById('f_search').addEventListener('input', applyFilters);
+  document.getElementById('f_reset').addEventListener('click', ()=>{
+    document.getElementById('f_images').checked = true;
+    document.getElementById('f_rdat').checked = true;
+    document.getElementById('f_loc').checked = true;
+    document.getElementById('f_bounds').checked = true;
+    document.getElementById('f_search').value = '';
+    applyFilters();
+  });
+
   function renderItem(obj){
     const name = obj.name;
     // build URL without double-encoding for better raw access; encodeURI for safety but preserve common characters
@@ -317,8 +394,11 @@
     hint.textContent = 'No files enumerated. If your server does not expose a directory listing, create static/radar/list.json (array of filenames) or use the provided /recent-images API.';
     return;
   }
-  hint.textContent = `Found ${items.length} item(s)`;
-  items.forEach(renderItem);
+
+  // store and apply filters
+  itemsAll = items.map(it => ({ name: it.name })); // normalize
+  hint.textContent = `Found ${itemsAll.length} item(s)`;
+  applyFilters();
 })();
 </script>
 </body>
