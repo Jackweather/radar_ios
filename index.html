@@ -154,7 +154,22 @@
     try{
       const d = new Date(ts);
       if(isNaN(d)) return ts;
-      return d.toLocaleString();
+      // Use Intl.DateTimeFormat to force America/New_York timezone and 12-hour clock
+      if(typeof Intl !== 'undefined' && Intl.DateTimeFormat){
+        const opts = {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: 'numeric',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+          timeZone: 'America/New_York'
+        };
+        return new Intl.DateTimeFormat('en-US', opts).format(d) + ' ET';
+      }
+      // Fallback (may not convert timezone): show en-US 12-hour format
+      return d.toLocaleString('en-US', { hour12: true }) + ' ET';
     }catch(e){
       return ts;
     }
@@ -353,7 +368,11 @@
 
     const lower2 = name.toLowerCase();
     if(/\.(png|jpe?g|gif|webp|svg)$/i.test(lower2)){
-      const img = document.createElement('img'); img.src = url; img.alt = name;
+      const img = document.createElement('img');
+      // cache-bust images so updated PNGs are fetched; prefer server timestamp when available
+      const cacheSuffix = obj.timestamp ? ('?t=' + encodeURIComponent(obj.timestamp)) : ('?t=' + Date.now());
+      img.src = url + cacheSuffix;
+      img.alt = name;
       img.onload = ()=>{ thumb.innerHTML=''; thumb.appendChild(img); };
       img.onerror = ()=>{ thumb.textContent = 'img'; };
       it.appendChild(thumb); it.appendChild(meta);
@@ -407,27 +426,57 @@
   }
 
   // try JSON list first, then server API, then directory HTML parse
-  hint.textContent = 'Looking for list.json...';
-  let items = await tryListJson();
-  if(!items){
-    hint.textContent = 'Trying server API (/recent-images)...';
-    items = await tryRecentImages();
+  //  hint.textContent = 'Looking for list.json...';
+  //  let items = await tryListJson();
+  //  if(!items){
+  //    hint.textContent = 'Trying server API (/recent-images)...';
+  //    items = await tryRecentImages();
+  //  }
+  //  if(!items){
+  //    hint.textContent = 'Trying directory HTML parse...';
+  //    items = await tryDirHtml();
+  //  }
+  //  if(!items || items.length===0){
+  //    hint.textContent = 'No files enumerated. If your server does not expose a directory listing, create static/radar/list.json (array of filenames) or use the provided /recent-images API.';
+  //    return;
+  //  }
+  //
+  //  // store and apply filters
+  //  //  itemsAll = items.map(it => ({ name: it.name })); // normalize
+  //  // preserve timestamp where provided
+  //  itemsAll = items.map(it => ({ name: it.name, timestamp: it.timestamp || null })); // normalize
+  //  hint.textContent = `Found ${itemsAll.length} item(s)`;
+  //  applyFilters();
+
+  // load items (initial + polling). prefer recent-images; fall back to list.json and directory HTML.
+  const REFRESH_INTERVAL = 10000; // 10s
+  async function fetchAndMergeItems(){
+    try{
+      const items = await tryRecentImages() || await tryListJson() || await tryDirHtml();
+      if(!items || !Array.isArray(items)) return false;
+      // merge preserving cached fields (e.g. _cachedJsonText)
+      const oldMap = new Map(itemsAll.map(it => [it.name, it]));
+      itemsAll = items.map(it => {
+        const existing = oldMap.get(it.name);
+        return existing ? Object.assign(existing, { timestamp: it.timestamp || existing.timestamp || null }) : { name: it.name, timestamp: it.timestamp || null };
+      });
+      hint.textContent = `Found ${itemsAll.length} item(s) — updated ${new Date().toLocaleTimeString()}`;
+      applyFilters();
+      return true;
+    }catch(e){
+      console.warn('fetchAndMergeItems error', e);
+      return false;
+    }
   }
-  if(!items){
-    hint.textContent = 'Trying directory HTML parse...';
-    items = await tryDirHtml();
-  }
-  if(!items || items.length===0){
+
+  // initial load then start polling every 10s
+  const ok = await fetchAndMergeItems();
+  if(!ok){
     hint.textContent = 'No files enumerated. If your server does not expose a directory listing, create static/radar/list.json (array of filenames) or use the provided /recent-images API.';
     return;
   }
-
-  // store and apply filters
-  //  itemsAll = items.map(it => ({ name: it.name })); // normalize
-  // preserve timestamp where provided
-  itemsAll = items.map(it => ({ name: it.name, timestamp: it.timestamp || null })); // normalize
-  hint.textContent = `Found ${itemsAll.length} item(s)`;
-  applyFilters();
+  // poll periodically
+  setInterval(fetchAndMergeItems, REFRESH_INTERVAL);
 })();
 </script>
 </body>
