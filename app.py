@@ -73,18 +73,7 @@ def latest_for_station(station_id):
 
 @app.route('/', endpoint='index')
 def root():
-    # Try serving index from templates first (preferred location)
-    try:
-        # look for a few possible template names
-        tpl_candidates = ['radar_index.html', 'index.html']
-        for tpl in tpl_candidates:
-            tpl_path = os.path.join(app.template_folder or 'templates', tpl)
-            if os.path.exists(tpl_path):
-                return render_template(tpl)
-    except Exception:
-        pass
-
-    # Next try a project-root index.html (if you moved the file to repo root)
+    # Serve the project's root index.html as the primary index page if present.
     try:
         root_index = os.path.join(os.path.dirname(__file__), 'index.html')
         if os.path.exists(root_index):
@@ -92,11 +81,11 @@ def root():
     except Exception:
         pass
 
-    # Then try serving the legacy static/radar/index.html (backwards-compatible)
+    # Fallback: try legacy static/radar/index.html (backwards-compatible)
     try:
         return send_from_directory(RADAR_DIR, 'index.html')
     except Exception:
-        # Fallback: preserve previous behavior if none of the static/index/template files are available
+        # Final fallback: render gallery template if no index.html files found
         images = list_radar_files()
         return render_template('radar_gallery.html', images=images)
 
