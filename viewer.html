@@ -1,0 +1,394 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Radar Viewer</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:12px}
+    #controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+    canvas{border:1px solid #999;background:rgba(0,0,0,0.02)}
+    #canvasWrap{display:flex;gap:8px;align-items:flex-start}
+    #radarCanvas{width:800px;height:800px}
+    #legend{margin-top:8px;display:flex;align-items:center;gap:12px}
+    #status{min-width:320px;color:#444}
+    input[type=number]{width:72px}
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label>Station<select id="station"></select></label>
+    <input id="jsonUrl" placeholder="Optional: URL to .json or .rdat" style="width:360px"/>
+    <input type="file" id="jsonFile" accept=".json,.rdat"/>
+    <label><input type="checkbox" id="useBinary"/>Use .rdat</label>
+    <button id="loadBtn">Load</button>
+    <button id="attemptBtn" title="Try partial extraction">Partial Load</button>
+    <label>vmin <input id="vmin" type="range" min="0" max="60" value="15"/><input id="vminNumber" type="number" min="0" max="80" value="15"/></label>
+    <label>vmax <input id="vmax" type="range" min="20" max="80" value="75"/><input id="vmaxNumber" type="number" min="20" max="100" value="75"/></label>
+    <label>cmap <select id="cmap"><option value="nws">NWS</option><option value="viridis">Viridis</option></select></label>
+    <label><input type="checkbox" id="smoothing"/>Smoothing</label>
+    <button id="downloadBtn">Download PNG</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="radarCanvas" width="800" height="800"></canvas>
+  </div>
+
+  <div id="legend">
+    <canvas id="legendCanvas" width="300" height="24"></canvas>
+    <div id="legendLabels"></div>
+  </div>
+
+<script>
+(() => {
+  // UI elements
+  const STATIONS = ["KDVN","KENX","KOKX","KBGM","KBUF","KTYX","KBOX"];
+  const stationSel = document.getElementById('station');
+  const jsonFile = document.getElementById('jsonFile');
+  const jsonUrl = document.getElementById('jsonUrl');
+  const useBinary = document.getElementById('useBinary');
+  const loadBtn = document.getElementById('loadBtn');
+  const attemptBtn = document.getElementById('attemptBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const status = document.getElementById('status');
+  const canvas = document.getElementById('radarCanvas');
+  const ctx = canvas.getContext('2d');
+  const vmin = document.getElementById('vmin');
+  const vmax = document.getElementById('vmax');
+  const vminNumber = document.getElementById('vminNumber');
+  const vmaxNumber = document.getElementById('vmaxNumber');
+  const cmapSel = document.getElementById('cmap');
+  const smoothing = document.getElementById('smoothing');
+  const legendCanvas = document.getElementById('legendCanvas');
+  const legendCtx = legendCanvas.getContext('2d');
+  const legendLabels = document.getElementById('legendLabels');
+
+  let lastPayload = null;
+  // color definitions
+  const cmapStops = [
+    [5,[232,232,255]],[10,[200,200,255]],[15,[160,160,255]],[20,[120,220,120]],[25,[80,200,80]],[30,[0,160,0]],
+    [35,[255,255,0]],[40,[255,200,0]],[45,[255,120,0]],[50,[255,0,0]],[55,[180,0,120]],[60,[160,0,200]],[70,[120,0,255]]
+  ];
+  const viridisStops = [[0,[68,1,84]],[0.25,[58,82,139]],[0.5,[32,144,140]],[0.75,[94,201,98]],[1,[253,231,37]]];
+
+  function interpColor(stops,t){
+    if(t<=0) return stops[0][1]; if(t>=1) return stops[stops.length-1][1];
+    for(let i=0;i<stops.length-1;i++){
+      const [t0,c0]=stops[i], [t1,c1]=stops[i+1];
+      if(t>=t0 && t<=t1){ const u=(t-t0)/(t1-t0); return [Math.round(c0[0]+(c1[0]-c0[0])*u), Math.round(c0[1]+(c1[1]-c0[1])*u), Math.round(c0[2]+(c1[2]-c0[2])*u)]; }
+    }
+    return stops[stops.length-1][1];
+  }
+
+  function getColorDbz(v){
+    if(v===null||v===undefined||isNaN(v)) return [0,0,0,0];
+    for(let i=0;i<cmapStops.length-1;i++){
+      const [v0,c0]=cmapStops[i], [v1,c1]=cmapStops[i+1];
+      if(v<=v0) return [c0[0],c0[1],c0[2],180];
+      if(v>=v0 && v<=v1){ const t=(v-v0)/(v1-v0); return [Math.round(c0[0]+(c1[0]-c0[0])*t),Math.round(c0[1]+(c1[1]-c0[1])*t),Math.round(c0[2]+(c1[2]-c0[2])*t),230]; }
+    }
+    const last=cmapStops[cmapStops.length-1][1]; return [last[0],last[1],last[2],230];
+  }
+
+  function colormapColor(val){
+    const cmap = cmapSel.value;
+    const vminVal = Number(vminNumber.value), vmaxVal = Number(vmaxNumber.value);
+    if(isNaN(val)) return [0,0,0,0];
+    if(cmap === 'viridis'){
+      const t = Math.max(0,Math.min(1,(val - vminVal)/(vmaxVal - vminVal)));
+      const rgb = interpColor(viridisStops, t);
+      return [rgb[0],rgb[1],rgb[2],230];
+    }
+    return getColorDbz(val);
+  }
+
+  function drawLegend(){
+    const w=legendCanvas.width,h=legendCanvas.height;
+    const img=legendCtx.createImageData(w,h);
+    for(let x=0;x<w;x++){
+      const t=x/(w-1);
+      const dbzMin=cmapStops[0][0], dbzMax=cmapStops[cmapStops.length-1][0];
+      const dbz=dbzMin + t*(dbzMax-dbzMin);
+      const rgba=getColorDbz(dbz);
+      for(let y=0;y<h;y++){
+        const idx=(y*w + x)*4;
+        img.data[idx+0]=rgba[0]; img.data[idx+1]=rgba[1]; img.data[idx+2]=rgba[2]; img.data[idx+3]=rgba[3];
+      }
+    }
+    legendCtx.putImageData(img,0,0);
+    legendLabels.textContent = `${cmapStops[0][0]}–${cmapStops[cmapStops.length-1][0]} dBZ`;
+  }
+
+  // fill station selector
+  STATIONS.forEach(s=>{ const o=document.createElement('option'); o.value=s; o.textContent=s; stationSel.appendChild(o); });
+
+  // parse .rdat ArrayBuffer
+  async function parseRdat(buf){
+    const dv = new DataView(buf);
+    if(buf.byteLength < 4) throw new Error('too small');
+    const headerLen = dv.getUint32(0, true);
+    const headerText = new TextDecoder().decode(buf.slice(4, 4 + headerLen));
+    const header = JSON.parse(headerText);
+    const rows = header.rows, cols = header.cols;
+    const floatBuf = buf.slice(4 + headerLen);
+    const floats = new Float32Array(floatBuf);
+    const expected = rows * cols;
+    if(floats.length === expected){
+      // projected single-array
+      const refl = new Array(rows);
+      for(let r=0;r<rows;r++){
+        const row = new Array(cols);
+        for(let c=0;c<cols;c++){ const v = floats[r*cols + c]; row[c] = Number.isNaN(v) ? null : v; }
+        refl[r]=row;
+      }
+      return {station: header.station||'unknown', reflectivity: refl, bounds: header.bounds||null, _proj_rows: rows, _proj_cols: cols};
+    }
+    if(floats.length >= expected*3){
+      const refl = new Array(rows), lat=new Array(rows), lon=new Array(rows);
+      for(let r=0;r<rows;r++){
+        const rr=new Array(cols), la=new Array(cols), lo=new Array(cols);
+        for(let c=0;c<cols;c++){
+          const idx = r*cols + c;
+          const vR = floats[idx], vLat = floats[expected + idx], vLon = floats[expected*2 + idx];
+          rr[c] = Number.isNaN(vR)?null:vR; la[c]=Number.isNaN(vLat)?null:vLat; lo[c]=Number.isNaN(vLon)?null:vLon;
+        }
+        refl[r]=rr; lat[r]=la; lon[r]=lo;
+      }
+      return {station: header.station||'unknown', reflectivity: refl, gate_latitude: lat, gate_longitude: lon, bounds: header.bounds||null};
+    }
+    throw new Error('unexpected rdat layout');
+  }
+
+  // render projected payload on canvas (offscreen then scale with smoothing)
+  function renderProjected(payload, name){
+    const refl = payload.reflectivity;
+    const rows = payload._proj_rows || refl.length;
+    const cols = payload._proj_cols || (refl[0] ? refl[0].length : rows);
+    const off = document.createElement('canvas'); off.width = cols; off.height = rows;
+    const offCtx = off.getContext('2d');
+    const img = offCtx.createImageData(cols, rows);
+    const vminVal = Number(vminNumber.value), vmaxVal = Number(vmaxNumber.value);
+    for(let r=0;r<rows;r++){
+      const row = refl[r] || [];
+      for(let c=0;c<cols;c++){
+        const idx = (r*cols + c)*4; const v = row[c];
+        if(v===null || isNaN(v)){ img.data[idx+3]=0; continue; }
+        const rgba = colormapColor(v);
+        img.data[idx+0]=rgba[0]; img.data[idx+1]=rgba[1]; img.data[idx+2]=rgba[2]; img.data[idx+3]=rgba[3];
+      }
+    }
+    offCtx.putImageData(img,0,0);
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+    status.textContent = `Rendered projected ${name} (${rows}×${cols})`;
+    lastPayload = payload;
+  }
+
+  // render JSON (aggregate max per pixel)
+  function renderJSON(data, name){
+    lastPayload = data; lastStationName = name;
+    try{
+      const bounds = data.bounds || {min_lat: Math.min(...data.gate_latitude.flat()), max_lat: Math.max(...data.gate_latitude.flat()), min_lon: Math.min(...data.gate_longitude.flat()), max_lon: Math.max(...data.gate_longitude.flat())};
+      const w=canvas.width,h=canvas.height,pixels=w*h;
+      const maxVals = new Float32Array(pixels); for(let i=0;i<pixels;i++) maxVals[i]=NaN;
+      for(let i=0;i<data.reflectivity.length;i++){
+        const rRefl = data.reflectivity[i], rLat = data.gate_latitude[i], rLon = data.gate_longitude[i];
+        for(let j=0;j<rRefl.length;j++){
+          const v=rRefl[j], lat=rLat[j], lon=rLon[j];
+          if(lat===null||lon===null) continue;
+          const x = Math.round((lon - bounds.min_lon) / (bounds.max_lon - bounds.min_lon || 1) * (w-1));
+          const y = Math.round((1 - (lat - bounds.min_lat) / (bounds.max_lat - bounds.min_lat || 1)) * (h-1));
+          if(x<0||x>=w||y<0||y>=h) continue;
+          const pix = y*w + x; const val = (v===null)?NaN:Number(v); if(isNaN(val)) continue;
+          const cur = maxVals[pix]; if(isNaN(cur) || val>cur) maxVals[pix]=val;
+        }
+      }
+      if(smoothing.checked){
+        const tmp = new Float32Array(pixels);
+        for(let yy=0;yy<h;yy++) for(let xx=0;xx<w;xx++){
+          let sum=0,cnt=0;
+          for(let oy=-1;oy<=1;oy++){const y2=yy+oy; if(y2<0||y2>=h) continue; for(let ox=-1;ox<=1;ox++){const x2=xx+ox; if(x2<0||x2>=w) continue; const v=maxVals[y2*w+x2]; if(!isNaN(v)){sum+=v;cnt++;}}}
+          tmp[yy*w+xx]=cnt>0?sum/cnt:NaN;
+        }
+        for(let i=0;i<pixels;i++) maxVals[i]=tmp[i];
+      }
+      const img = ctx.createImageData(w,h);
+      for(let i=0;i<pixels;i++){
+        const v=maxVals[i]; if(isNaN(v)){ img.data[i*4+3]=0; continue; }
+        const rgba = colormapColor(v);
+        img.data[i*4+0]=rgba[0]; img.data[i*4+1]=rgba[1]; img.data[i*4+2]=rgba[2]; img.data[i*4+3]=rgba[3];
+      }
+      ctx.putImageData(img,0,0);
+      status.textContent = `Rendered ${name} (${data.reflectivity.length}×${data.reflectivity[0].length})`;
+    }catch(e){ status.textContent = 'Render error: '+e.message; console.error(e); }
+  }
+
+  // high-level loader: file preferred, else fetch by URL or station
+  async function loadStation(){
+    const file = jsonFile.files && jsonFile.files[0];
+    const url = jsonUrl.value && jsonUrl.value.trim();
+    const wantBin = useBinary.checked;
+    if(file){
+      status.textContent = 'Reading file '+file.name;
+      const reader = new FileReader();
+      reader.onload = async ()=> {
+        try{
+          const buf = reader.result;
+          if(wantBin || file.name.toLowerCase().endsWith('.rdat')){
+            const payload = await parseRdat(buf);
+            if(payload._proj_rows) return renderProjected(payload, file.name);
+            if(payload.gate_latitude) return renderJSON(payload, file.name);
+          } else {
+            const text = String(buf);
+            const parsed = JSON.parse(text);
+            return renderJSON(parsed, file.name);
+          }
+        }catch(e){ status.textContent = 'Failed to read file: '+e.message; console.error(e); }
+      };
+      reader.onerror = ()=> status.textContent = 'Failed to read file';
+      if(wantBin || file.name.toLowerCase().endsWith('.rdat')) reader.readAsArrayBuffer(file);
+      else reader.readAsText(file);
+      return;
+    }
+    // no file -> fetch
+    let fetchUrl = url || (stationSel.value ? stationSel.value + '.json' : null);
+    let fetchBinary = false;
+    if(useBinary.checked) fetchUrl = url && /\.rdat$/i.test(url) ? url : (stationSel.value ? stationSel.value + '.rdat' : fetchUrl), fetchBinary = true;
+    if(!fetchUrl){ status.textContent = 'No source selected'; return; }
+    status.textContent = 'Fetching '+fetchUrl;
+    try{
+      const resp = await fetch(fetchUrl);
+      if(!resp.ok) throw new Error('HTTP '+resp.status);
+      if(fetchBinary){
+        const buf = await resp.arrayBuffer();
+        const payload = await parseRdat(buf);
+        if(payload._proj_rows) return renderProjected(payload, fetchUrl);
+        if(payload.gate_latitude) return renderJSON(payload, fetchUrl);
+      } else {
+        const data = await resp.json();
+        // try projected assets (optional): attempt to fetch station_proj.rdat before rendering JSON (lightweight)
+        const stationId = (fetchUrl.split('/').pop().split('.')[0] || '').toUpperCase();
+        if(stationId){
+          const projCandidates = [`${stationId}_proj_2048.rdat`, `${stationId}_proj_1024.rdat`, `${stationId}_proj.rdat`];
+          for(const c of projCandidates){
+            try{ const r=await fetch(c); if(r.ok){ const buf=await r.arrayBuffer(); const payload=await parseRdat(buf); if(payload._proj_rows){ renderProjected(payload, c); return; } } }catch(e){}
+          }
+        }
+        return renderJSON(data, fetchUrl);
+      }
+    }catch(e){ status.textContent = 'Fetch failed: '+e.message; console.error(e); }
+  }
+
+  // partial extraction (simple head-based attempt)
+  async function attemptPartial(){
+    const file = jsonFile.files && jsonFile.files[0];
+    if(!file){ status.textContent='Select local file first'; return; }
+    status.textContent='Attempting partial extraction...';
+    try{
+      const head = await readSlice(file,0,Math.min(file.size,4*1024*1024));
+      const partial = tryExtractParts(head);
+      if(partial){ renderJSON(partial, file.name + ' (partial)'); return; }
+      status.textContent='Partial extraction failed';
+    }catch(e){ status.textContent='Partial failed: '+e.message; console.error(e); }
+  }
+
+  function readSlice(file,start,end){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result)); r.onerror=rej; r.readAsText(file.slice(start,end)); }); }
+
+  // tryExtractParts: quick bracket-based extract for reflectivity/lat/lon
+  function extractArrayFromText(key,text){
+    const re = new RegExp(`"${key}"\\s*:\\s*\\[`,'i'); const m=re.exec(text); if(!m) return null;
+    let start = m.index + m[0].lastIndexOf('['), depth=0, end=-1;
+    for(let i=start;i<text.length;i++){ const ch=text[i]; if(ch==='[') depth++; else if(ch===']'){ depth--; if(depth===0){ end=i; break; } } }
+    let slice = end!==-1 ? text.slice(start,end+1) : text.slice(start);
+    slice = slice.replace(/,\s*]$/,']');
+    if(end===-1){ let open=0; for(const ch of slice){ if(ch==='[') open++; if(ch===']') open--; } if(open>0) slice += ']'.repeat(open); }
+    try{ return JSON.parse(slice); }catch(e){ try{ const cleaned = slice.replace(/,\s*(?=[\]\}])/g,''); return JSON.parse(cleaned); }catch(e2){ return null; } }
+  }
+  function extractObjectFromText(key,text){
+    const re = new RegExp(`"${key}"\\s*:\\s*\\{`,'i'); const m=re.exec(text); if(!m) return null;
+    let start=m.index + m[0].lastIndexOf('{'), depth=0, end=-1;
+    for(let i=start;i<text.length;i++){ const ch=text[i]; if(ch==='{') depth++; else if(ch==='}'){ depth--; if(depth===0){ end=i; break; } } }
+    let slice = end!==-1 ? text.slice(start,end+1) : text.slice(start);
+    slice = slice.replace(/,\s*}$/,'}');
+    if(end===-1){ let open=0; for(const ch of slice){ if(ch==='{') open++; if(ch==='}') open--; } if(open>0) slice += '}'.repeat(open); }
+    try{ return JSON.parse(slice); }catch(e){ try{ const cleaned = slice.replace(/,\s*(?=[\}\]])/g,''); return JSON.parse(cleaned); }catch(e2){ return null; } }
+  }
+  function tryExtractParts(text){
+    try{ return JSON.parse(text); }catch(e){}
+    const refl = extractArrayFromText('reflectivity',text); const lats = extractArrayFromText('gate_latitude',text); const lons = extractArrayFromText('gate_longitude',text);
+    if(!refl||!lats||!lons) return null;
+    const bounds = extractObjectFromText('bounds', text) || null;
+    const stationMatch = /"station"\s*:\s*"([^"]+)"/i.exec(text); const station = stationMatch ? stationMatch[1] : 'unknown';
+    return {station, reflectivity: refl, gate_latitude: lats, gate_longitude: lons, bounds};
+  }
+
+  // UI hookups
+  loadBtn.addEventListener('click', loadStation);
+  attemptBtn.addEventListener('click', attemptPartial);
+  downloadBtn.addEventListener('click', ()=>{ const a=document.createElement('a'); a.href = canvas.toDataURL('image/png'); a.download = `${stationSel.value||'radar'}.png`; a.click(); });
+  vmin.addEventListener('input', ()=>{ vminNumber.value = vmin.value; if(lastPayload && !lastPayload._proj_rows) renderJSON(lastPayload, lastStationName); });
+  vmax.addEventListener('input', ()=>{ vmaxNumber.value = vmax.value; if(lastPayload && !lastPayload._proj_rows) renderJSON(lastPayload, lastStationName); });
+  vminNumber.addEventListener('change', ()=>{ vmin.value = vminNumber.value; if(lastPayload && !lastPayload._proj_rows) renderJSON(lastPayload, lastStationName); });
+  vmaxNumber.addEventListener('change', ()=>{ vmax.value = vmaxNumber.value; if(lastPayload && !lastPayload._proj_rows) renderJSON(lastPayload, lastStationName); });
+
+  // drag & drop
+  document.body.addEventListener('dragover', e=>e.preventDefault());
+  document.body.addEventListener('drop', e=>{ e.preventDefault(); if(e.dataTransfer.files && e.dataTransfer.files[0]){ jsonFile.files = e.dataTransfer.files; loadStation(); } });
+
+  // init
+  drawLegend();
+  stationSel.value = STATIONS[0];
+
+  // auto-load if URL contains ?load=... and optional bounds (min_lat, max_lat, min_lon, max_lon)
+  (async function autoLoadFromParams(){
+    try{
+      const params = new URLSearchParams(window.location.search);
+      const load = params.get('load');
+      if(!load) return;
+      status.textContent = 'Auto-loading ' + load;
+      // if .rdat -> fetch as ArrayBuffer and parse with parseRdat
+      if(/\.rdat$/i.test(load)){
+        const resp = await fetch(load);
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        const buf = await resp.arrayBuffer();
+        const payload = await parseRdat(buf);
+        // if bounds passed in URL, override/set payload.bounds so renderJSON will use them
+        const min_lat = params.get('min_lat'), max_lat = params.get('max_lat'), min_lon = params.get('min_lon'), max_lon = params.get('max_lon');
+        if(min_lat && max_lat && min_lon && max_lon){
+          payload.bounds = {
+            min_lat: Number(min_lat),
+            max_lat: Number(max_lat),
+            min_lon: Number(min_lon),
+            max_lon: Number(max_lon)
+          };
+        }
+        // prefer projected render if available, otherwise lat/lon renderer
+        if(payload._proj_rows) {
+          renderProjected(payload, load);
+        } else {
+          renderJSON(payload, load);
+        }
+      } else {
+        // non-rdat: try fetching JSON and override bounds if provided
+        const resp = await fetch(load);
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        const data = await resp.json();
+        const min_lat = params.get('min_lat'), max_lat = params.get('max_lat'), min_lon = params.get('min_lon'), max_lon = params.get('max_lon');
+        if(min_lat && max_lat && min_lon && max_lon){
+          data.bounds = {
+            min_lat: Number(min_lat),
+            max_lat: Number(max_lat),
+            min_lon: Number(min_lon),
+            max_lon: Number(max_lon)
+          };
+        }
+        renderJSON(data, load);
+      }
+    }catch(e){ status.textContent = 'Auto-load failed: '+e.message; console.error(e); }
+  })();
+
+})();
+</script>
+</body>
+</html>
