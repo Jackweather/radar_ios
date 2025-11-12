@@ -68,6 +68,7 @@
   <!-- FILTER BAR -->
   <div class="filter-bar" aria-label="Filters">
     <div class="filter-group">
+      <label><input type="checkbox" id="f_images" checked> Images</label>
       <label><input type="checkbox" id="f_rdat" checked> RDAT</label>
       <label><input type="checkbox" id="f_loc" checked> Location JSON</label>
       <label><input type="checkbox" id="f_bounds" checked> Bounds JSON</label>
@@ -295,6 +296,7 @@
   }
 
   function applyFilters(){
+    const showImages = document.getElementById('f_images').checked;
     const showRdat = document.getElementById('f_rdat').checked;
     const showLoc = document.getElementById('f_loc').checked;
     const showBounds = document.getElementById('f_bounds').checked;
@@ -305,8 +307,8 @@
     const filtered = itemsAll.filter(it => {
       const c = classifyName(it.name);
       let ok = false;
-      // images are always shown (no images checkbox anymore)
-      if(c.isImage) ok = true;
+      // apply images checkbox
+      if(c.isImage && showImages) ok = true;
       if(c.isRdat && showRdat) ok = true;
       if(c.isLocation && showLoc) ok = true;
       if(c.isBounds && showBounds) ok = true;
@@ -320,11 +322,14 @@
   }
 
   // wire filter inputs
+  document.getElementById('f_images').addEventListener('change', applyFilters);
   document.getElementById('f_rdat').addEventListener('change', applyFilters);
   document.getElementById('f_loc').addEventListener('change', applyFilters);
   document.getElementById('f_bounds').addEventListener('change', applyFilters);
   document.getElementById('f_search').addEventListener('input', applyFilters);
-  document.getElementById('f_reset').addEventListener('click', ()=>{
+  document.getElementById('f_reset').addEventListener('click', ()=> {
+    // reset image checkbox as well
+    document.getElementById('f_images').checked = true;
     document.getElementById('f_rdat').checked = true;
     document.getElementById('f_loc').checked = true;
     document.getElementById('f_bounds').checked = true;
@@ -370,8 +375,10 @@
     if(/\.(png|jpe?g|gif|webp|svg)$/i.test(lower2)){
       const img = document.createElement('img');
       // cache-bust images so updated PNGs are fetched; prefer server timestamp when available
-      const cacheSuffix = obj.timestamp ? ('?t=' + encodeURIComponent(obj.timestamp)) : ('?t=' + Date.now());
-      img.src = url + cacheSuffix;
+      // const cacheSuffix = obj.timestamp ? ('?t=' + encodeURIComponent(obj.timestamp)) : ('?t=' + Date.now());
+      // img.src = url + cacheSuffix;
+      // No cache-bust suffix: keep URL ending with the filename (e.g. KBUF.png)
+      img.src = url;
       img.alt = name;
       img.onload = ()=>{ thumb.innerHTML=''; thumb.appendChild(img); };
       img.onerror = ()=>{ thumb.textContent = 'img'; };
