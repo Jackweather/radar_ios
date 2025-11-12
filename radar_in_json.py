@@ -13,13 +13,24 @@ import time
 import sys
 from datetime import datetime, timedelta
 import struct
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+# try to import scipy for high-quality interpolation/smoothing; fall back gracefully
+try:
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+    _HAS_SCIPY = True
+except Exception:
+    _HAS_SCIPY = False
 
 # -------------------------------
 # Settings
 # -------------------------------
 OUTPUT_DIR = os.path.join("static", "radar")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-STATIONS = ["KDVN", "KENX", "KOKX", "KBGM", "KBUF", "KTYX", "KBOX"]
+# ensure KBUF is included
+STATIONS = ["KBUF","KCXX", "KDVN", "KENX", "KOKX", "KBGM",  "KTYX", "KBOX"]
 
 # -------------------------------
 # Helper Functions
@@ -66,18 +77,36 @@ def ensure_uncompressed(path):
     return path
 
 
-def write_rdat(path, refl_arr, lat_arr, lon_arr, header_meta):
-    """Write compact binary .rdat file."""
-    rows, cols = refl_arr.shape
-    header = dict(header_meta)
-    header.update({"rows": int(rows), "cols": int(cols), "dtype": "float32", "order": "C"})
-    header_bytes = json.dumps(header).encode("utf-8")
-    with open(path, "wb") as f:
-        f.write(struct.pack("<I", len(header_bytes)))
-        f.write(header_bytes)
-        f.write(np.ascontiguousarray(refl_arr.astype(np.float32)).tobytes(order="C"))
-        f.write(np.ascontiguousarray(lat_arr.astype(np.float32)).tobytes(order="C"))
-        f.write(np.ascontiguousarray(lon_arr.astype(np.float32)).tobytes(order="C"))
+# add helper to create a realistic NWS reflectivity colormap
+def create_nws_colormap():
+	"""
+	Return a ListedColormap that approximates the NWS reflectivity palette.
+	Masked/NaN values are set fully transparent.
+	"""
+	from matplotlib.colors import ListedColormap
+	# Rough NWS-like palette from low->high dBZ
+	colors = [
+		"#9cc4ff",  # very light blue
+		"#0096ff",  # blue
+		"#00e600",  # green-cyan
+		"#33ff33",  # green
+		"#ffff00",  # yellow
+		"#ffbf00",  # amber
+		"#ff8000",  # orange
+		"#ff4000",  # deep orange
+		"#ff0000",  # red
+		"#b0007f",  # magenta
+		"#800080",  # purple
+		"#ffffff",  # white (extreme)
+	]
+	cmap = ListedColormap(colors, name="custom_NWSRef")
+	# make masked/NaN values fully transparent
+	try:
+		cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+	except Exception:
+		# some matplotlib versions may not support set_bad on ListedColormap
+		pass
+	return cmap
 
 
 def process_station(station, output_dir):
@@ -94,8 +123,16 @@ def process_station(station, output_dir):
         downloaded = download_s3_object(bucket, key, dest_dir=tmp_dir)
         local_file = ensure_uncompressed(downloaded)
 
-        # Load radar (only reflectivity)
-        radar = pyart.io.read_nexrad_archive(local_file, include_fields=["reflectivity"])
+        # Load radar (only reflectivity). If Py-ART raises an OSError about unknown compression,
+        # skip this station and continue to the next one.
+        try:
+            radar = pyart.io.read_nexrad_archive(local_file, include_fields=["reflectivity"])
+        except OSError as e:
+            msg = str(e).lower()
+            if "unknown compression" in msg or "unknown compression record" in msg:
+                print(f"→ Skipping {station}: unknown compression ({e})")
+                return
+            raise
 
         if "reflectivity" not in radar.fields:
             print(f"⚠️ No reflectivity data for {station}")
@@ -136,15 +173,50 @@ def process_station(station, output_dir):
         with open(os.path.join(output_dir, f"{station}_bounds.json"), "w") as bf:
             json.dump(bounds, bf, indent=2)
 
-        # Write binary .rdat file
-        rdat_header = {
-            "station": station,
-            "bounds": bounds,
-            "time_units": radar.time.get("units"),
-            "metadata": {"radar_name": radar.metadata.get("instrument_name", None)}
-        }
-        rdat_path = os.path.join(output_dir, f"{station}.rdat")
-        write_rdat(rdat_path, refl, lat, lon, rdat_header)
+        # Render reflectivity (sweep 0) to PNG using high-quality (no interpolation) rendering
+        try:
+            sweep = 0
+            sl = radar.get_slice(sweep)  # slice of rays for this sweep
+            # select sweep data
+            sweep_refl = refl[sl, :].copy()
+            sweep_lat = lat[sl, :].copy()
+            sweep_lon = lon[sl, :].copy()
+
+            # mask invalid so background is transparent
+            sweep_refl = np.ma.masked_invalid(sweep_refl)
+
+            # plotting params for high quality without interpolation
+            FIGSIZE = (12, 12)
+            DPI = 300
+            VMIN, VMAX = 0, 80
+
+            fig, ax = plt.subplots(figsize=FIGSIZE)
+
+            cmap = create_nws_colormap()
+            # ensure masked values transparent
+            try:
+                cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+            except Exception:
+                pass
+
+            # Use pcolormesh directly on gate lon/lat + reflectivity.
+            # This preserves original gate values (no interpolation). Use shading="auto".
+            pcm = ax.pcolormesh(
+                sweep_lon, sweep_lat, sweep_refl,
+                cmap=cmap, vmin=VMIN, vmax=VMAX, shading="auto", rasterized=True
+            )
+
+            # remove axes, ticks and ensure transparent background
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.axis("off")
+            ax.set_facecolor("none")
+
+            png_path = os.path.join(output_dir, f"{station}.png")
+            plt.savefig(png_path, dpi=DPI, bbox_inches="tight", pad_inches=0, transparent=True)
+            plt.close(fig)
+        except Exception as e:
+            print(f"⚠️ Could not render PNG for {station}: {e}")
 
         # Explicit cleanup
         del radar, refl, lat, lon
