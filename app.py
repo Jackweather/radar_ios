@@ -42,7 +42,8 @@ def list_radar_files():
     files.sort(key=lambda f: os.path.getmtime(os.path.join(RADAR_DIR, f)), reverse=True)
     for fn in files:
         path = os.path.join(RADAR_DIR, fn)
-        ts = datetime.datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+        # use UTC ISO timestamp (Z) so client can reliably convert to EST
+        ts = datetime.datetime.utcfromtimestamp(os.path.getmtime(path)).isoformat() + "Z"
         # station guess: part before first underscore or whole basename
         basename_no_ext = os.path.splitext(fn)[0]
         station = basename_no_ext.split('_')[0] if '_' in basename_no_ext else basename_no_ext
@@ -136,17 +137,32 @@ def status():
 
 @app.route('/run-generation', methods=['POST'])
 def run_generation():
-    # Create placeholder images for each station (filename: {ID}_{timestamp}.png)
-    ts = int(time.time())
+    # Create/replace placeholder images for each station using a fixed filename (e.g. KTYX.png).
+    # Also remove older station-specific PNG variants (like KTYX_12345.png) to avoid accumulation.
     created = []
     for s in stations:
-        fn = f"{s['id']}_{ts}.png"
+        fn = f"{s['id']}.png"
         path = os.path.join(RADAR_DIR, fn)
-        with open(path, 'wb') as fh:
-            fh.write(_PLACEHOLDER_PNG)
+
+        # remove older variants that start with the station id to keep the directory clean
+        try:
+            for existing in os.listdir(RADAR_DIR):
+                if existing.startswith(s['id'] + "_") and existing.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg')):
+                    try:
+                        os.remove(os.path.join(RADAR_DIR, existing))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # write/overwrite the fixed-name PNG
+        try:
+            with open(path, 'wb') as fh:
+                fh.write(_PLACEHOLDER_PNG)
+        except Exception as e:
+            print(f"Error writing placeholder PNG for {s['id']}: {e}")
 
         # create or update a station-level bounds JSON so the gallery can link to it
-        # use the bounds provided in the stations list if available
         b = s.get('bounds', None)
         if b and isinstance(b, list) and len(b) >= 2:
             bounds_obj = {
@@ -171,7 +187,7 @@ def run_generation():
             print(f"Error writing bounds JSON for {s['id']}: {e}")
 
         created.append(fn)
-    return jsonify({'message': f'Created {len(created)} placeholder images and bounds JSON.', 'files': created})
+    return jsonify({'message': f'Created/updated {len(created)} placeholder images and bounds JSON.', 'files': created})
 
 @app.route('/run-task1', methods=['POST', 'GET'])
 def run_task1():
