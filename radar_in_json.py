@@ -187,7 +187,7 @@ def process_station(station, output_dir):
 
             # plotting params for high quality without interpolation
             FIGSIZE = (12, 12)
-            DPI = 300
+            DPI = 600
             VMIN, VMAX = 0, 80
 
             fig, ax = plt.subplots(figsize=FIGSIZE)
@@ -247,3 +247,4 @@ if __name__ == "__main__":
         process_station(station_id, OUTPUT_DIR)
     else:
         run_all()
+
