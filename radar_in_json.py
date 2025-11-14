@@ -7,6 +7,17 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 import pyart
+# try to import pyart ctables registry for official NWS colormap
+try:
+    from pyart import ctables  # preferred location
+    _HAS_CT = True
+except Exception:
+    try:
+        from pyart.graph import ctables  # alternate location in some versions
+        _HAS_CT = True
+    except Exception:
+        ctables = None
+        _HAS_CT = False
 import numpy as np
 import gc
 import time
@@ -187,24 +198,37 @@ def process_station(station, output_dir):
 
             # plotting params for high quality without interpolation
             FIGSIZE = (12, 12)
-            DPI = 600
+            DPI = 700
             VMIN, VMAX = 0, 80
 
             fig, ax = plt.subplots(figsize=FIGSIZE)
 
-            cmap = create_nws_colormap()
-            # ensure masked values transparent
+            # Prefer Py-ART's official NWS reflectivity table if available;
+            # fall back to the local create_nws_colormap() implementation.
+            if _HAS_CT:
+                try:
+                    ref_norm, ref_cmap = ctables.registry.get_with_steps('NWSReflectivity', 5, 5)
+                except Exception:
+                    ref_norm, ref_cmap = None, create_nws_colormap()
+            else:
+                ref_norm, ref_cmap = None, create_nws_colormap()
+            # ensure masked values transparent if colormap supports it
             try:
-                cmap.set_bad((0.0, 0.0, 0.0, 0.0))
+                ref_cmap.set_bad((0.0, 0.0, 0.0, 0.0))
             except Exception:
                 pass
 
-            # Use pcolormesh directly on gate lon/lat + reflectivity.
-            # This preserves original gate values (no interpolation). Use shading="auto".
-            pcm = ax.pcolormesh(
-                sweep_lon, sweep_lat, sweep_refl,
-                cmap=cmap, vmin=VMIN, vmax=VMAX, shading="auto", rasterized=True
-            )
+            # Use normalization from Py-ART if provided; otherwise use vmin/vmax
+            if ref_norm is not None:
+                pcm = ax.pcolormesh(
+                    sweep_lon, sweep_lat, sweep_refl,
+                    cmap=ref_cmap, norm=ref_norm, shading="auto", rasterized=True
+                )
+            else:
+                pcm = ax.pcolormesh(
+                    sweep_lon, sweep_lat, sweep_refl,
+                    cmap=ref_cmap, vmin=VMIN, vmax=VMAX, shading="auto", rasterized=True
+                )
 
             # remove axes, ticks and ensure transparent background
             ax.set_xticks([])
@@ -247,5 +271,4 @@ if __name__ == "__main__":
         process_station(station_id, OUTPUT_DIR)
     else:
         run_all()
-
 
